@@ -206,7 +206,6 @@ try {
     canonicalConfigHash: canonical.computeCanonicalHash(value),
   });
   await prisma.vpnProfile.update({ where: { id: profile.id }, data: providerFields(provider) });
-  process.env.SXB_SSH_RELAY_PROFILE_IDS = profile.id;
   const provisionTarget = '/api/provision/activate';
   const provisionBody = { dataToken: sub.dataToken, deviceId: a.id };
   async function provisionWithCapability() {
@@ -222,8 +221,11 @@ try {
     decipher.setAuthTag(tag);
     return JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString());
   }
-  check('old native capability preserves direct provider configuration',
+  check('unprotected profile preserves direct provider configuration',
     decryptProvision(await request(a, provisionTarget, provisionBody, a.tokens.accessToken)).host, provider.host);
+  process.env.SXB_SSH_RELAY_PROFILE_IDS = profile.id;
+  check('protected profile cannot leak direct configuration to an old native client',
+    (await request(a, provisionTarget, provisionBody, a.tokens.accessToken)).data.code, 'RELAY_CLIENT_UPDATE_REQUIRED');
   const gateway = decryptProvision(await provisionWithCapability());
   check('new native receives only gateway host', gateway.host, 'sxb-gateway');
   check('metadata endpoint does not expose provider URI or SNI',
@@ -232,13 +234,27 @@ try {
     /provider\.invalid|synthetic-provider/.test(JSON.stringify(gateway)), false);
   delete process.env.SXB_SSH_RELAY_PROFILE_IDS;
   check('capable native outside allowlist remains direct', decryptProvision(await provisionWithCapability()).host, provider.host);
-  process.env.SXB_SSH_RELAY_PROFILE_IDS = profile.id;
+  process.env.SXB_SSH_RELAY_REQUIRED_FROM = profile.createdAt.toISOString();
+  check('future SSH profile automatically receives only the gateway', decryptProvision(await provisionWithCapability()).host, 'sxb-gateway');
+  const automaticAccess = (await request(a, '/api/mobile/connections', undefined, a.tokens.accessToken)).data.connections;
+  check('future SSH policy is advertised for cache migration', automaticAccess.find(item => item.id === sub.id).sshRelayAvailable, true);
+  check('future SSH metadata hides provider URI',
+    (await request(a, `/api/mobile/vpn/config?subscriptionId=${sub.id}`, undefined, a.tokens.accessToken)).data.connectionUri, null);
+  check('future SSH without capability is explicitly refused',
+    (await request(a, provisionTarget, provisionBody, a.tokens.accessToken)).status, 426);
   const { fingerprint, ...unpinned } = provider;
   await prisma.vpnProfile.update({ where: { id: profile.id }, data: providerFields(unpinned) });
   check('unverified upstream is explicitly refused', (await provisionWithCapability()).data.code, 'RELAY_PROFILE_NOT_READY');
-  await prisma.vpnProfile.update({ where: { id: profile.id }, data: providerFields(provider) });
+  const vless = { protocol: 'vless', host: 'vless.invalid', port: 443, uuid: randomUUID(), tls: true };
+  await prisma.vpnProfile.update({ where: { id: profile.id }, data: { protocol: 'vless', ...providerFields(vless) } });
+  check('future non-SSH profile remains unchanged', decryptProvision(await provisionWithCapability()).host, vless.host);
+  await prisma.vpnProfile.update({ where: { id: profile.id }, data: { protocol: 'ssh', ...providerFields(provider) } });
   const relayConnection = { action: 'connect', connectionId: randomUUID(), sessionId: `sess_${randomUUID()}`,
     subscriptionId: sub.id, configId: profile.id, relayTicket: gateway.sshRelay.ticket };
+  const directAttempt = { ...relayConnection, relayTicket: undefined, connectionId: randomUUID(), sessionId: `sess_${randomUUID()}` };
+  check('cached direct configuration cannot register a future protected profile',
+    (await request(a, '/api/mobile/vpn/session', directAttempt, a.tokens.accessToken)).data.reason, 'RELAY_REQUIRED');
+  check('refused direct registration leaves no binding', await prisma.mobileConnection.count({ where: { id: directAttempt.connectionId } }), 0);
   check('relay connection registered', (await request(a, '/api/mobile/vpn/session', relayConnection, a.tokens.accessToken)).status, 200);
   check('relay registration retry remains valid', (await request(a, '/api/mobile/vpn/session', relayConnection, a.tokens.accessToken)).status, 200);
   const { relayTicket, ...directRetry } = relayConnection;
@@ -281,6 +297,7 @@ try {
   await prisma.subscription.update({ where: { id: sub.id }, data: { quotaBytes: 1073741824n, quotaUsed: 0n } });
   await prisma.vpnClient.update({ where: { id: a.client.id }, data: { quotaUsed: { decrement: 600n } } });
   delete process.env.SXB_SSH_RELAY_PROFILE_IDS;
+  delete process.env.SXB_SSH_RELAY_REQUIRED_FROM;
   const connection = { action: 'connect', connectionId: randomUUID(), sessionId: `sess_${randomUUID()}`,
     subscriptionId: sub.id, configId: profile.id };
   check('server authorizes managed attribution', (await request(a, '/api/mobile/vpn/session', connection, a.tokens.accessToken)).status, 200);

@@ -180,8 +180,11 @@ The gateway keeps provider credentials, destination, payload and host-key
 fingerprint on the backend. A capable Android binary advertises
 `X-SXB-SSH-Relay: 1`; only profiles explicitly listed in
 `SXB_SSH_RELAY_PROFILE_IDS` (comma-separated profile IDs) receive the relay
-configuration. Empty/unset means disabled. Other protocols, profiles and
-older binaries retain the direct path. Migrating an existing direct cache
+configuration. Empty/unset means disabled unless the future-import policy below
+applies. Other protocols and unselected existing profiles retain the direct path.
+Protected profiles refuse older binaries without gateway capability with
+`RELAY_CLIENT_UPDATE_REQUIRED` (HTTP 426), rather than delivering provider secrets.
+Migrating an existing direct cache
 requires one successful provisioning; failed provisioning does not prove that
 the old destination has disappeared from that device.
 
@@ -279,6 +282,25 @@ depend on the supplier being reachable; it retains the verified supplier pin.
 Delete the temporary secret after the operation. Refresh the app's access list
 and establish a new connection to replace an old direct cache with the relay
 configuration; availability on the server alone does not prove this happened.
+
+To protect future dashboard SSH imports automatically, pass `future_ssh_from`
+(a UTC ISO timestamp at or before the operation) with a confirmed `enable`.
+The operation persists `SXB_SSH_RELAY_REQUIRED_FROM` together with the allowlist,
+verifies both in PM2, and rolls both back if activation fails. Every SSH profile
+created at or after that cutoff requires the gateway without further allowlisting;
+VLESS and other protocols are unaffected. Repeating activation cannot advance
+the cutoff and silently unprotect previously covered imports.
+
+Automatic protection is not automatic trust: a new profile must contain a valid
+encrypted canonical configuration, supported transport and a supplier-verified
+SHA256 host-key pin. Missing pins or unsupported transports fail explicitly with
+`RELAY_PROFILE_NOT_READY`; no direct configuration is returned. The gateway still
+checks the actual supplier key before authentication on every connection.
+Fresh and retried managed connection registrations without a relay ticket are
+refused with `RELAY_REQUIRED`, including old direct caches awaiting provisioning.
+Locally imported manual configurations are outside this server-managed policy.
+Removing an explicit allowlist entry does not disable protection for a profile
+covered by the cutoff; the operator tool refuses to claim otherwise.
 
 Coverage includes real loopback SSH transfers, TLS hostname rejection,
 cancellation, provider fingerprint refusal, half-closes, proof replay,

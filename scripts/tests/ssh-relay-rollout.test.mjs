@@ -118,6 +118,49 @@ test('allowlist edits retain every unrelated key and profile and support an empt
   assert.throws(() => rollout.editAllowlist(embedded, require('dotenv').parse(embedded), profile.id, true), /AMBIGUOUS/);
 });
 
+test('future SSH policy is persistent, scoped, monotonic and retained when removing an explicit profile', () => {
+  const source = 'PORT=4000\r\nSXB_SSH_RELAY_PROFILE_IDS=other\r\n';
+  const parse = require('dotenv').parse;
+  const cutoff = '2026-01-01T00:00:00.000Z';
+  const changed = rollout.rolloutEnvironment(source, parse(source), profile.id, true, cutoff);
+  assert.equal(changed.before, source);
+  assert.deepEqual(changed.value, { SXB_SSH_RELAY_PROFILE_IDS: 'other,profile-one', SXB_SSH_RELAY_REQUIRED_FROM: cutoff });
+  assert.deepEqual(changed.previousValue, { SXB_SSH_RELAY_PROFILE_IDS: 'other', SXB_SSH_RELAY_REQUIRED_FROM: '' });
+  assert.equal(parse(changed.after).PORT, '4000');
+  assert.equal(parse(changed.after).SXB_SSH_RELAY_REQUIRED_FROM, cutoff);
+  const removed = rollout.rolloutEnvironment(changed.after, parse(changed.after), profile.id, false);
+  assert.equal(removed.value.SXB_SSH_RELAY_PROFILE_IDS, 'other');
+  assert.equal(removed.value.SXB_SSH_RELAY_REQUIRED_FROM, cutoff);
+  for (const invalid of ['invalid', '2026-01-01', '2999-01-01T00:00:00.000Z']) {
+    assert.throws(() => rollout.rolloutEnvironment(source, parse(source), profile.id, true, invalid), /POLICY_INVALID/);
+  }
+  assert.throws(() => rollout.rolloutEnvironment(changed.after, parse(changed.after), profile.id, true,
+    '2026-01-02T00:00:00.000Z'), /POLICY_DOWNGRADE/);
+  assert.throws(() => rollout.rolloutEnvironment(source, parse(source), profile.id, false, cutoff), /ENABLE_ONLY/);
+  const ambiguous = changed.after + 'SXB_SSH_RELAY_REQUIRED_FROM=' + cutoff + '\n';
+  assert.throws(() => rollout.rolloutEnvironment(ambiguous, parse(ambiguous), profile.id, true, cutoff), /AMBIGUOUS/);
+});
+
+test('operator isolation cannot clear the backend module path or persist operator-only inputs', () => {
+  const app = require(path.join(root, 'ecosystem.config.cjs')).apps.find(item => item.name === 'sxb-backend');
+  const next = rollout.restartEnvironment({ NODE_PATH: '', PATH: 'synthetic-path',
+    SXB_RELAY_ROLLOUT_CODE: 'synthetic-code', SXB_RELAY_CONFIRMED: 'true' }, app.env,
+  { SXB_SSH_RELAY_PROFILE_IDS: 'profile-one', SXB_SSH_RELAY_REQUIRED_FROM: '2026-01-01T00:00:00.000Z' });
+  assert.equal(next.NODE_PATH, app.env.NODE_PATH);
+  assert.equal(next.NODE_ENV, 'production');
+  assert.equal(next.PATH, 'synthetic-path');
+  assert.equal(next.SXB_SSH_RELAY_PROFILE_IDS, 'profile-one');
+  assert.equal(next.SXB_SSH_RELAY_REQUIRED_FROM, '2026-01-01T00:00:00.000Z');
+  assert.equal(Object.keys(next).some(key => key.startsWith('SXB_RELAY_')), false);
+});
+
+test('removing an allowlist entry cannot claim to disable an automatically protected future profile', async () => {
+  await assert.rejects(rollout.prepareRollout({ ...enable, mode: 'disable' }, request, {
+    ...deps, requiredFrom: '2026-01-01T00:00:00.000Z',
+    profiles: async () => [{ ...profile, createdAt: new Date('2026-01-02T00:00:00.000Z') }],
+  }), /AUTOMATIC_POLICY_REQUIRED/);
+});
+
 test('environment compare-and-swap refuses a concurrent edit without losing any content', t => {
   const dir = mkdtempSync(path.join(tmpdir(), 'sxb-rollout-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -203,6 +246,24 @@ test('an unchanged canonical still checks freshness and an environment conflict 
   calls.length = 0;
   await assert.rejects(rollout.applyRollout(plan, { ...effects, api }), /FAILED_ROLLED_BACK/);
   assert.deepEqual(calls, ['backup', 'update', 'env', 'restore']);
+});
+
+test('failed runtime activation restores both the explicit allowlist and future policy together', async () => {
+  const plan = await rollout.prepareRollout(enable, request, deps);
+  const change = rollout.rolloutEnvironment('PORT=4000\n', { PORT: '4000' }, profile.id, true,
+    '2026-01-01T00:00:00.000Z');
+  let source = change.before, restored = false;
+  const restarts = [];
+  await assert.rejects(rollout.applyRollout(plan, {
+    api, environment: () => change, backup: async () => {},
+    updateProfile: async () => {}, restoreProfile: async () => { restored = true; },
+    replaceEnvironment: async (before, after) => { assert.equal(source, before); source = after; },
+    restart: async value => { restarts.push(value); },
+    healthy: async value => { if (value.SXB_SSH_RELAY_REQUIRED_FROM) throw new Error('runtime mismatch'); },
+  }), /FAILED_ROLLED_BACK/);
+  assert.equal(source, change.before);
+  assert.equal(restored, true);
+  assert.deepEqual(restarts, [change.value, change.previousValue]);
 });
 
 test('operator probe uses the real gateway, pin, SSH authentication, forwarding and byte meters', { timeout: 15000 }, async t => {

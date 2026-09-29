@@ -7,10 +7,11 @@ const { createRequire } = require('node:module');
 const { execFileSync } = require('node:child_process');
 
 const ENV_KEY = 'SXB_SSH_RELAY_PROFILE_IDS';
+const FUTURE_KEY = 'SXB_SSH_RELAY_REQUIRED_FROM';
 const ID = /^[a-zA-Z0-9_-]{1,200}$/;
 const HASH = /^(?:hmac-sha256-v1:)?[a-f0-9]{64}$/;
 const PROFILE_SELECT = { id: true, protocol: true, status: true, canonicalConfig: true,
-  canonicalConfigHash: true, configVersion: true, updatedAt: true };
+  canonicalConfigHash: true, configVersion: true, createdAt: true, updatedAt: true };
 
 function parseRequest(encoded, parseTransport) {
   if (typeof encoded !== 'string' || encoded.length > 65536 ||
@@ -50,21 +51,50 @@ function selectProfile(rows, request, api) {
   return matches[0];
 }
 
+function editEnvironmentValue(source, parsed, key, value) {
+  if (![ENV_KEY, FUTURE_KEY].includes(key)) throw new Error('ROLLOUT_ENV_KEY_INVALID');
+  const previous = parsed[key] || '';
+  const pattern = new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}[ \\t]*=[^\\r\\n]*`, 'gm');
+  const lines = source.match(pattern) || [];
+  if (lines.length > 1 || /[\r\n]/.test(previous) ||
+      (lines.length === 1) !== Object.hasOwn(parsed, key)) throw new Error('ROLLOUT_ALLOWLIST_AMBIGUOUS');
+  const line = `${key}=${value}`;
+  return lines.length ? source.replace(pattern, line) : source + (source.endsWith('\n') ? '' : '\n') + line + '\n';
+}
+
 function editAllowlist(source, parsed, profileId, enabled) {
   if (!ID.test(profileId)) throw new Error('ROLLOUT_PROFILE_ID_INVALID');
   const previous = parsed[ENV_KEY] || '';
   const ids = previous.split(',').map(value => value.trim()).filter(Boolean);
   if (ids.some(value => !ID.test(value))) throw new Error('ROLLOUT_ALLOWLIST_INVALID');
-  const pattern = /^[ \t]*(?:export[ \t]+)?SXB_SSH_RELAY_PROFILE_IDS[ \t]*=[^\r\n]*/gm;
-  const lines = source.match(pattern) || [];
-  if (lines.length > 1 || /[\r\n]/.test(previous) ||
-      (lines.length === 1) !== Object.hasOwn(parsed, ENV_KEY)) throw new Error('ROLLOUT_ALLOWLIST_AMBIGUOUS');
   const next = enabled ? [...new Set([...ids, profileId])] : ids.filter(id => id !== profileId);
-  const line = `${ENV_KEY}=${next.join(',')}`;
   return {
-    source: lines.length ? source.replace(pattern, line) : source + (source.endsWith('\n') ? '' : '\n') + line + '\n',
+    source: editEnvironmentValue(source, parsed, ENV_KEY, next.join(',')),
     value: next.join(','),
     previousValue: previous,
+  };
+}
+
+function validateFuturePolicy(value) {
+  if (value && (!Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value ||
+      Date.parse(value) > Date.now())) throw new Error('ROLLOUT_FUTURE_POLICY_INVALID');
+}
+
+function rolloutEnvironment(source, parsed, profileId, enabled, requiredFrom = '') {
+  validateFuturePolicy(requiredFrom);
+  const previousPolicy = parsed[FUTURE_KEY] || '';
+  validateFuturePolicy(previousPolicy);
+  if (requiredFrom && !enabled) throw new Error('ROLLOUT_FUTURE_POLICY_ENABLE_ONLY');
+  if (previousPolicy && requiredFrom && Date.parse(requiredFrom) > Date.parse(previousPolicy)) {
+    throw new Error('ROLLOUT_FUTURE_POLICY_DOWNGRADE');
+  }
+  const edited = editAllowlist(source, parsed, profileId, enabled);
+  const nextPolicy = requiredFrom || previousPolicy;
+  return {
+    before: source,
+    after: requiredFrom ? editEnvironmentValue(edited.source, parsed, FUTURE_KEY, nextPolicy) : edited.source,
+    value: { [ENV_KEY]: edited.value, [FUTURE_KEY]: nextPolicy },
+    previousValue: { [ENV_KEY]: edited.previousValue, [FUTURE_KEY]: previousPolicy },
   };
 }
 
@@ -90,7 +120,12 @@ async function prepareRollout({ mode, profileId, expectedHash, confirmed }, requ
   const selected = selectProfile(rows, request, deps.api);
   if (expectedHash && selected.profile.canonicalConfigHash !== expectedHash) throw new Error('ROLLOUT_PROFILE_CHANGED');
   if (selected.profile.status !== 'active') throw new Error('ROLLOUT_PROFILE_INACTIVE');
-  if (mode === 'disable') return { ...selected, mode };
+  if (mode === 'disable') {
+    if (deps.requiredFrom && new Date(selected.profile.createdAt).getTime() >= Date.parse(deps.requiredFrom)) {
+      throw new Error('ROLLOUT_AUTOMATIC_POLICY_REQUIRED');
+    }
+    return { ...selected, mode };
+  }
   const verified = await deps.verifyHost(request);
   if (verified.status !== 'host_key_matched' || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(verified.verifiedFingerprint || '')) {
     throw new Error('ROLLOUT_PROVIDER_KEY_UNVERIFIED');
@@ -183,6 +218,21 @@ async function verifyIngress() {
   });
 }
 
+function verifyRuntimePolicy(value) {
+  const processes = JSON.parse(execFileSync('pm2', ['jlist'], { encoding: 'utf8', timeout: 10000 }));
+  const targets = processes.filter(item => item.name === 'sxb-backend');
+  if (targets.length !== 1 || targets[0].pm2_env.status !== 'online' ||
+      Object.entries(value).some(([key, expected]) => (targets[0].pm2_env[key] || '') !== expected)) {
+    throw new Error('ROLLOUT_RUNTIME_MISMATCH');
+  }
+}
+
+function restartEnvironment(operator, application, policy) {
+  const next = { ...operator, ...application, ...policy };
+  for (const key of Object.keys(next)) if (key.startsWith('SXB_RELAY_')) delete next[key];
+  return next;
+}
+
 function replaceFile(filename, expected, next) {
   if (fs.readFileSync(filename, 'utf8') !== expected) throw new Error('ROLLOUT_ENV_CHANGED');
   const temporary = filename + `.relay-${randomUUID()}`;
@@ -236,21 +286,30 @@ async function main() {
     }
     stage = 'ENVIRONMENT';
     const backend = createRequire(path.join(root, 'backend', 'package.json'));
+    const application = require(path.join(root, 'ecosystem.config.cjs')).apps.find(app => app.name === 'sxb-backend');
+    if (!application?.env?.NODE_PATH) throw new Error('ROLLOUT_RUNTIME_CONFIG_INVALID');
     const envPath = path.join(root, '.env');
     const source = fs.readFileSync(envPath, 'utf8'), env = backend('dotenv').parse(source);
     if (!env.DATABASE_URL || !env.ENCRYPTION_KEY) throw new Error('ROLLOUT_ENV_INCOMPLETE');
     process.env.DATABASE_URL = env.DATABASE_URL;
     process.env.ENCRYPTION_KEY = env.ENCRYPTION_KEY;
+    process.env[ENV_KEY] = env[ENV_KEY] || '';
+    process.env[FUTURE_KEY] = env[FUTURE_KEY] || '';
+    validateFuturePolicy(process.env[FUTURE_KEY]);
     stage = 'REQUEST';
     const preflight = require(path.join(root, 'scripts', 'ssh-relay-preflight.cjs'));
     const request = parseRequest(process.env.SXB_SSH_RELAY_ROLLOUT_CONFIG, preflight.parseConfig);
     delete process.env.SXB_SSH_RELAY_ROLLOUT_CONFIG;
+    const requiredFrom = process.env.SXB_RELAY_FUTURE_SSH_FROM || '';
+    validateFuturePolicy(requiredFrom);
+    if (requiredFrom && process.env.SXB_RELAY_MODE !== 'enable') throw new Error('ROLLOUT_FUTURE_POLICY_ENABLE_ONLY');
     stage = 'BUNDLE';
     const output = backend('esbuild').buildSync({
       stdin: { contents: [
         "export * from './server/services/canonical-config.ts';",
         "export * from './server/services/ssh-relay-transport.ts';",
         "export * from './server/services/ssh-relay.ts';",
+        "export * from './server/services/ssh-relay-ticket.ts';",
       ].join('\n'), resolveDir: root, loader: 'ts' },
       bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent',
     });
@@ -265,7 +324,7 @@ async function main() {
       expectedHash: process.env.SXB_RELAY_EXPECTED_HASH,
       confirmed: process.env.SXB_RELAY_CONFIRMED === 'true',
     }, request, {
-      api,
+      api, requiredFrom: env[FUTURE_KEY],
       profiles: id => {
         stage = 'PROFILE_READ';
         return db.vpnProfile.findMany({
@@ -281,11 +340,14 @@ async function main() {
     if (plan.mode === 'inspect') {
       stage = 'INGRESS';
       await verifyIngress();
+      verifyRuntimePolicy({ [ENV_KEY]: env[ENV_KEY] || '', [FUTURE_KEY]: env[FUTURE_KEY] || '' });
       console.log(JSON.stringify({
         status: 'ready', profileId: plan.profile.id, configHash: plan.profile.canonicalConfigHash,
         verifiedFingerprint: plan.verifiedFingerprint, isolatedRelayTransfer: plan.transfer,
         tlsIngressVerified: true,
-        enabled: (env[ENV_KEY] || '').split(',').map(id => id.trim()).includes(plan.profile.id),
+        enabled: api.relayProfileEnabled(plan.profile),
+        futureSshFrom: env[FUTURE_KEY] || null,
+        runtimePolicyVerified: true,
       }));
       return;
     }
@@ -293,14 +355,13 @@ async function main() {
     const result = await applyRollout(plan, {
       api,
       environment(id, enabled) {
-        const edited = editAllowlist(source, env, id, enabled);
-        return { before: source, after: edited.source, value: edited.value, previousValue: edited.previousValue };
+        return rolloutEnvironment(source, env, id, enabled, requiredFrom);
       },
       backup: async (profile, change) => {
         const dir = path.join(root, 'backups', 'ssh-relay-rollout');
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
         fs.writeFileSync(path.join(dir, randomUUID() + '.json'), JSON.stringify({
-          createdAt: new Date().toISOString(), profile, previousAllowlist: change.previousValue, nextAllowlist: change.value,
+          createdAt: new Date().toISOString(), profile, previousGatewayPolicy: change.previousValue, nextGatewayPolicy: change.value,
         }), { flag: 'wx', mode: 0o600 });
       },
       updateProfile: async (profile, data) => {
@@ -327,7 +388,7 @@ async function main() {
       replaceEnvironment: (before, after) => replaceFile(envPath, before, after),
       restart: async value => {
         execFileSync('pm2', ['restart', 'sxb-backend', '--update-env'], {
-          timeout: 45000, stdio: 'pipe', env: { ...process.env, [ENV_KEY]: value },
+          timeout: 45000, stdio: 'pipe', env: restartEnvironment(process.env, application.env, value),
         });
       },
       healthy: async value => {
@@ -346,15 +407,13 @@ async function main() {
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
         }
-        const processes = JSON.parse(execFileSync('pm2', ['jlist'], { encoding: 'utf8', timeout: 10000 }));
-        const targets = processes.filter(item => item.name === 'sxb-backend');
-        if (targets.length !== 1 || targets[0].pm2_env.status !== 'online' ||
-            targets[0].pm2_env[ENV_KEY] !== value) throw new Error('ROLLOUT_RUNTIME_MISMATCH');
+        verifyRuntimePolicy(value);
         await verifyIngress();
         execFileSync('pm2', ['save'], { timeout: 10000, stdio: 'pipe' });
       },
     });
-    console.log(JSON.stringify({ status: 'applied', ...result, isolatedRelayTransfer: plan.transfer }));
+    console.log(JSON.stringify({ status: 'applied', ...result, futureSshFrom: requiredFrom || env[FUTURE_KEY] || null,
+      isolatedRelayTransfer: plan.transfer }));
   } catch (error) {
     if (error?.message === 'ROLLOUT_PROFILE_AMBIGUOUS' && process.env.SXB_RELAY_MODE === 'inspect') {
       try {
@@ -374,5 +433,6 @@ async function main() {
   }
 }
 
-module.exports = { PROFILE_SELECT, parseRequest, selectProfile, selectionMetadata, editAllowlist, prepareRollout, verifyTransfer, replaceFile, applyRollout };
+module.exports = { PROFILE_SELECT, parseRequest, selectProfile, selectionMetadata, editAllowlist, rolloutEnvironment,
+  restartEnvironment, prepareRollout, verifyTransfer, replaceFile, applyRollout };
 if (require.main === module || !module.parent) main();

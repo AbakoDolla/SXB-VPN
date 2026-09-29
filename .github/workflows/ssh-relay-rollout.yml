@@ -19,6 +19,9 @@ on:
         type: boolean
         default: false
         description: Authorize the targeted change and backend restart.
+      future_ssh_from:
+        type: string
+        description: Optional UTC ISO timestamp; enable also requires the gateway for SSH profiles created since then.
 
 permissions:
   contents: read
@@ -56,6 +59,7 @@ jobs:
           SXB_RELAY_EXPECTED_HASH: ${{ inputs.expected_config_hash }}
           SXB_RELAY_CONFIRMED: ${{ inputs.confirmed }}
           SXB_RELAY_EXPECTED_SHA: ${{ github.sha }}
+          SXB_RELAY_FUTURE_SSH_FROM: ${{ inputs.future_ssh_from }}
         with:
           host: 141.95.112.93
           username: ubuntu
@@ -64,7 +68,7 @@ jobs:
           fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
           timeout: 30s
           command_timeout: 8m
-          envs: SXB_RELAY_ROLLOUT_CODE,SXB_SSH_RELAY_ROLLOUT_CONFIG,SXB_RELAY_MODE,SXB_RELAY_PROFILE_ID,SXB_RELAY_EXPECTED_HASH,SXB_RELAY_CONFIRMED,SXB_RELAY_EXPECTED_SHA
+          envs: SXB_RELAY_ROLLOUT_CODE,SXB_SSH_RELAY_ROLLOUT_CONFIG,SXB_RELAY_MODE,SXB_RELAY_PROFILE_ID,SXB_RELAY_EXPECTED_HASH,SXB_RELAY_CONFIRMED,SXB_RELAY_EXPECTED_SHA,SXB_RELAY_FUTURE_SSH_FROM
           script: |
             set +x
             set -euo pipefail

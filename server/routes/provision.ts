@@ -384,7 +384,10 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     let configExpiresAt = new Date(Date.now() + offlineDays * 86_400_000).toISOString();
     const provisionedAt   = new Date().toISOString();
 
-    if (req.get('X-SXB-SSH-Relay') === '1' && profile && relayProfileEnabled(profile.id)) {
+    if (profile && relayProfileEnabled(profile)) {
+      if (req.get('X-SXB-SSH-Relay') !== '1') {
+        return res.status(426).json({ code: 'RELAY_CLIENT_UPDATE_REQUIRED', error: 'Mettez à jour SXB VPN pour utiliser la passerelle privée de ce forfait.' });
+      }
       const bound = req.user ? await checkSession(req.user) : null;
       if (!bound || !req.user?.clientId || !req.user.deviceId || !bound.session.authExpiresAt) {
         return res.status(409).json({ code: 'RELAY_BOUND_SESSION_REQUIRED', error: 'Une activation sécurisée est requise pour cette passerelle.' });
