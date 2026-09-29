@@ -7,6 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import net from 'node:net';
+import https from 'node:https';
+import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -26,7 +28,7 @@ const api = {
   engineConfigFromCanonical: value => value, relayUpstream: value => value,
   computeCanonicalHash: () => 'b'.repeat(64), canonicalJson: JSON.stringify, encryptCanonical: () => 'new-encrypted',
 };
-const transfer = { publicPageVerified: true, uploadBytes: 56, downloadBytes: 1024 };
+const transfer = { publicPageVerified: true, destinationTlsVerified: true, uploadBytes: 56, downloadBytes: 1024 };
 const deps = {
   api, profiles: async () => [profile],
   verifyHost: async () => ({ status: 'host_key_matched', verifiedFingerprint: fingerprint }),
@@ -90,6 +92,9 @@ test('inspect proves the pinned key and real transfer without mutation; changes 
   }), /KEY_UNVERIFIED/);
   await assert.rejects(rollout.prepareRollout(enable, request, {
     ...deps, verifyTransfer: async () => ({ ...transfer, publicPageVerified: false }),
+  }), /TRANSFER_FAILED/);
+  await assert.rejects(rollout.prepareRollout(enable, request, {
+    ...deps, verifyTransfer: async () => ({ ...transfer, destinationTlsVerified: false }),
   }), /TRANSFER_FAILED/);
   await rollout.prepareRollout({ ...enable, mode: 'disable' }, request, {
     ...deps, verifyHost: async () => assert.fail('rollback must not depend on supplier reachability'),
@@ -278,8 +283,25 @@ test('failed runtime activation restores both the explicit allowlist and future 
   assert.deepEqual(restarts, [change.value, change.previousValue]);
 });
 
-test('operator probe uses the real gateway, pin, SSH authentication, forwarding and byte meters', { timeout: 15000 }, async t => {
+test('operator probe verifies real gateway forwarding, provider pin, HTTPS identity and fresh service data', { timeout: 30000 }, async t => {
   const { Client, Server, utils } = require('ssh2');
+  const directory = mkdtempSync(path.join(tmpdir(), 'sxb-relay-health-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const keyFile = path.join(directory, 'key.pem'), certFile = path.join(directory, 'cert.pem');
+  execFileSync(process.env.OPENSSL_BIN || 'openssl', ['req', '-x509', '-newkey', 'rsa:2048',
+    '-keyout', keyFile, '-out', certFile, '-days', '2', '-nodes', '-subj', '/CN=vpnsxb.afrihall.com',
+    '-addext', 'subjectAltName=DNS:vpnsxb.afrihall.com'], { stdio: 'pipe', timeout: 10000 });
+  const certificate = readFileSync(certFile);
+  let requests = 0, healthy = true;
+  const health = https.createServer({ key: readFileSync(keyFile), cert: certificate }, (req, res) => {
+    requests++;
+    assert.equal(req.socket.servername, 'vpnsxb.afrihall.com');
+    assert.match(req.url, /^\/api\/health\?relayCheck=[0-9a-f-]+$/);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: healthy ? 'ok' : 'unhealthy', service: 'sxb-vpn-backend', timestamp: new Date().toISOString() }));
+  });
+  health.listen(0, '127.0.0.1'); await once(health, 'listening');
+  t.after(async () => { health.closeAllConnections(); await new Promise(resolve => health.close(resolve)); });
   const output = require('esbuild').buildSync({
     entryPoints: [path.join(root, 'server', 'services', 'ssh-relay.ts')],
     bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent',
@@ -298,9 +320,11 @@ test('operator probe uses the real gateway, pin, SSH authentication, forwarding 
       else auth.reject(['password']);
     });
     client.on('tcpip', (accept, reject, target) => {
-      if (target.destIP !== 'example.com' || target.destPort !== 80) { reject(); return; }
-      const stream = accept(); stream.on('error', () => stream.destroy()); stream.on('data', () => {});
-      stream.once('end', () => stream.end('HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\nExample Domain'));
+      if (target.destIP !== 'vpnsxb.afrihall.com' || target.destPort !== 443) { reject(); return; }
+      const stream = accept(), socket = net.connect(health.address().port, '127.0.0.1');
+      stream.on('error', () => socket.destroy()); socket.on('error', () => stream.destroy());
+      stream.on('close', () => socket.destroy()); socket.on('close', () => stream.destroy());
+      stream.pipe(socket).pipe(stream);
     });
   });
   provider.listen(0, '127.0.0.1'); await once(provider, 'listening');
@@ -311,13 +335,19 @@ test('operator probe uses the real gateway, pin, SSH authentication, forwarding 
     }),
   };
   const upstream = { ...canonical, host: 'provider.invalid', fingerprint: pin };
-  const result = await rollout.verifyTransfer(upstream, real, Client);
+  const result = await rollout.verifyTransfer(upstream, real, Client, certificate);
   assert.equal(result.publicPageVerified, true);
-  assert.equal(result.uploadBytes, 56);
-  assert.equal(result.downloadBytes, 53);
+  assert.equal(result.destinationTlsVerified, true);
+  assert.ok(result.uploadBytes > 0);
+  assert.ok(result.downloadBytes > 0);
   assert.equal(passwords, 1);
-  await assert.rejects(rollout.verifyTransfer({ ...upstream, fingerprint }, real, Client));
+  assert.equal(requests, 1);
+  await assert.rejects(rollout.verifyTransfer({ ...upstream, fingerprint }, real, Client, certificate));
   assert.equal(passwords, 1);
+  await assert.rejects(rollout.verifyTransfer(upstream, real, Client), /certificate/i);
+  assert.equal(requests, 1);
+  healthy = false;
+  await assert.rejects(rollout.verifyTransfer(upstream, real, Client, certificate), /HEALTH_RESPONSE_INVALID/);
 });
 
 test('the mutating workflow is explicit, manual, pinned and serialized with production deployments', () => {

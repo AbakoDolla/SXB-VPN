@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
+const tls = require('node:tls');
 const { randomUUID } = require('node:crypto');
 const { createRequire } = require('node:module');
 const { execFileSync } = require('node:child_process');
@@ -148,7 +149,7 @@ async function prepareRollout({ mode, profileId, expectedHash, confirmed }, requ
   const canonical = { ...selected.canonical, fingerprint: verified.verifiedFingerprint };
   const upstream = deps.api.relayUpstream(deps.api.engineConfigFromCanonical(canonical));
   const transfer = await deps.verifyTransfer(upstream);
-  if (!transfer.publicPageVerified || transfer.uploadBytes <= 0 || transfer.downloadBytes <= 0) {
+  if (!transfer.publicPageVerified || !transfer.destinationTlsVerified || transfer.uploadBytes <= 0 || transfer.downloadBytes <= 0) {
     throw new Error('ROLLOUT_TRANSFER_FAILED');
   }
   return { ...selected, canonical, mode, verifiedFingerprint: verified.verifiedFingerprint, transfer };
@@ -156,10 +157,10 @@ async function prepareRollout({ mode, profileId, expectedHash, confirmed }, requ
 
 // Exercise the deployed gateway and provider with an operator-only, one-shot
 // loopback grant. No device account, subscription or production quota is forged.
-async function verifyTransfer(upstream, api, Client) {
+async function verifyTransfer(upstream, api, Client, healthCa) {
   const nonce = randomUUID();
   const server = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
-  let uploadBytes = 0, downloadBytes = 0, request, client, stream;
+  let uploadBytes = 0, downloadBytes = 0, request, client, stream, healthRequest, healthAgent;
   const relay = api.installSshRelay(server, {
     authorize: async req => {
       if (req.headers.authorization !== `Bearer ${nonce}`) throw new Error('ROLLOUT_PROBE_UNAUTHORIZED');
@@ -189,23 +190,38 @@ async function verifyTransfer(upstream, api, Client) {
         client = new Client();
         client.once('error', reject);
         client.once('close', () => reject(new Error('ROLLOUT_SSH_CLOSED')));
-        client.once('ready', () => client.forwardOut('127.0.0.1', 0, 'example.com', 80, (error, channel) => {
+        client.once('ready', () => client.forwardOut('127.0.0.1', 0, 'vpnsxb.afrihall.com', 443, (error, channel) => {
           if (error) { reject(new Error('ROLLOUT_CHANNEL_REFUSED')); return; }
           stream = channel;
-          const chunks = [];
-          let size = 0;
           channel.on('error', reject);
-          channel.on('data', chunk => {
-            size += chunk.length;
-            if (size > 65536) { reject(new Error('ROLLOUT_RESPONSE_TOO_LARGE')); channel.destroy(); return; }
-            chunks.push(chunk);
+          healthAgent = new https.Agent({ keepAlive: false, maxSockets: 1 });
+          healthAgent.createConnection = options => tls.connect({
+            ...options, socket: channel, servername: 'vpnsxb.afrihall.com', rejectUnauthorized: true,
+            ...(healthCa ? { ca: healthCa } : {}),
           });
-          channel.once('end', () => {
-            const response = Buffer.concat(chunks).toString('utf8');
-            if (/^HTTP\/1\.[01] 200\b/.test(response) && response.includes('Example Domain')) resolve();
-            else reject(new Error('ROLLOUT_PUBLIC_PAGE_INVALID'));
+          healthRequest = https.get({
+            hostname: 'vpnsxb.afrihall.com', port: 443, path: `/api/health?relayCheck=${nonce}`,
+            agent: healthAgent, headers: { Connection: 'close', 'Cache-Control': 'no-cache' },
+          }, response => {
+            const chunks = [];
+            let size = 0;
+            response.on('error', reject);
+            response.on('aborted', () => reject(new Error('ROLLOUT_HEALTH_RESPONSE_TRUNCATED')));
+            response.on('data', chunk => {
+              size += chunk.length;
+              if (size > 65536) { reject(new Error('ROLLOUT_RESPONSE_TOO_LARGE')); response.destroy(); return; }
+              chunks.push(chunk);
+            });
+            response.once('end', () => {
+              let body;
+              try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+              catch { reject(new Error('ROLLOUT_HEALTH_RESPONSE_INVALID')); return; }
+              if (response.statusCode === 200 && body?.status === 'ok' && body.service === 'sxb-vpn-backend' &&
+                  Number.isFinite(Date.parse(body.timestamp)) && Math.abs(Date.now() - Date.parse(body.timestamp)) < 60000) resolve();
+              else reject(new Error('ROLLOUT_HEALTH_RESPONSE_INVALID'));
+            });
           });
-          channel.end('GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n');
+          healthRequest.on('error', reject);
         }));
         // The ephemeral frontend key belongs to this loopback-only server;
         // supplier verification is still enforced by installSshRelay.
@@ -213,10 +229,10 @@ async function verifyTransfer(upstream, api, Client) {
       });
       request.end();
     });
-    return { publicPageVerified: true, uploadBytes, downloadBytes };
+    return { publicPageVerified: true, destinationTlsVerified: true, uploadBytes, downloadBytes };
   } finally {
     clearTimeout(timer);
-    stream?.destroy(); client?.destroy(); request?.destroy(); relay.close();
+    healthRequest?.destroy(); healthAgent?.destroy(); stream?.destroy(); client?.destroy(); request?.destroy(); relay.close();
     await new Promise(resolve => server.close(resolve));
   }
 }
