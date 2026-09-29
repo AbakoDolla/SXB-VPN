@@ -219,7 +219,15 @@ Refresh requires the same valid session, device, subscription and profile hash.
 Native reconnect reuses its current ticket; it does not extend an expired
 activation session or renew an expired credential independently of JS.
 
-Managed SSH connections reconcile their assigned profile before dialing.
+Managed SSH connections reuse a valid relay cache for the current device session
+and the last authoritative profile revision without waiting for the full catalogue.
+Stale sessions and changed profiles still require reconciliation before dialing.
+Cancelling an access long poll does not wait for Android's HTTP adapter to settle;
+cancelled responses cannot replace the fresh snapshot. A relay ticket inside its
+renewal window may still be used after a network-only renewal failure if more than
+30 seconds remain; HTTP refusals, expired tickets and deleted caches never fall back.
+The server still authorizes each connection and enforces its session, quota and
+profile binding. Pre-engine network failures retain their safe diagnostic codes.
 Gateway rollout and activation-session changes invalidate the local cache's
 session marker, even when the provider configuration hash is unchanged.
 Reprovisioning issues a new device-bound ticket; it never relaxes the server's

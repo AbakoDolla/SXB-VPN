@@ -237,7 +237,62 @@ function installConfigVault(h: Harness) {
 }
 
 describe('native configuration vault and lossless migration', () => {
-  for (const previous of ['direct', 'older-session'] as const) {
+  it('opens a current relay cache without waiting for catalogue synchronization', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h, null);
+    try {
+      h.state.storage.set('@sxb_session_security_v1', JSON.stringify({
+        version: 1, sessionId: 'current-session', generation: 2, keyId: 'key', clientId: 'client',
+      }));
+      const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
+        sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 3600000).toISOString() } };
+      await h.store.save('a', relay, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a',
+        sshRelayRequired: true, relaySession: await h.provision.currentRelaySession() });
+      let requests = 0;
+      h.api.default.defaults.adapter = async request => {
+        requests++;
+        throw new AxiosError('timeout of 15000ms exceeded', 'ECONNABORTED', request);
+      };
+      equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), relay);
+      assert.equal(requests, 0, 'an already valid relay must not depend on the catalogue HTTP endpoint');
+      await apply(h, snapshot('spent', 'active', 'exhausted'));
+      await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!),
+        (error: unknown) => h.policy.accessIssueFromError(error)?.code === 'CONFIG_EXHAUSTED');
+      assert.equal(requests, 0, 'a known access refusal must not start another catalogue request');
+    } finally { cleanup(); }
+  });
+
+  it('does not let an Android request that ignores abort block a fresh access snapshot', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h, null);
+    const started = deferred(), release = deferred();
+    let first: Promise<boolean> | undefined, second: Promise<boolean> | undefined;
+    let requests = 0;
+    try {
+      h.api.default.defaults.adapter = async request => {
+        const number = ++requests;
+        if (number === 1) { started.resolve(); await release.promise; }
+        return { status: 200, statusText: 'OK', headers: {}, config: request,
+          data: snapshot(number === 1 ? 'old' : 'fresh') };
+      };
+      first = h.sync.refreshAccessState(true);
+      void first.catch(() => {});
+      await started.promise;
+      second = h.sync.refreshAccessState(false);
+      void second.catch(() => {});
+      await nextTurn();
+      assert.equal(requests, 2, 'replacement request starts even if the cancelled adapter has not settled');
+      await second;
+      assert.equal(h.access.getAccessState().authority?.snapshot?.revision, 'fresh');
+    } finally {
+      release.resolve();
+      await Promise.allSettled([first, second]);
+      cleanup();
+    }
+    assert.equal(h.access.getAccessState().authority?.snapshot?.revision, 'fresh');
+  });
+
+  for (const previous of ['direct', 'older-session', 'changed-profile'] as const) {
     it(`upgrades ${previous} SSH cache to the current session without exposing provider credentials`, async () => {
       const h = await harness();
       const { cleanup } = await setup(h, null);
@@ -250,7 +305,9 @@ describe('native configuration vault and lossless migration', () => {
           sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 3600000).toISOString() } };
         const oldConfig = previous === 'direct'
           ? { protocol: 'ssh', host: 'provider.invalid', port: 80, username: 'synthetic', password: 'fixture-only' } : relay;
-        await h.store.save('a', oldConfig, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a', relaySession: 'old-session' });
+        await h.store.save('a', oldConfig, { source: 'backend', subscriptionId: 'a',
+          configHash: previous === 'changed-profile' ? 'older-hash' : 'hash-a',
+          relaySession: previous === 'changed-profile' ? await h.provision.currentRelaySession() : 'old-session' });
         const key = new Uint8Array(32).fill(7), iv = new Uint8Array(12).fill(3);
         const sealed = h.aes.encryptAes256Gcm(key, iv, Buffer.from(JSON.stringify(relay)));
         const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
@@ -347,6 +404,50 @@ describe('native configuration vault and lossless migration', () => {
       await assert.rejects(h.store.replaceRelayCredential('a', credential.ticket, credential), /CHANGED/);
       assert.equal((await h.store.get('a')).status, 'missing');
     } finally { cleanup(); }
+  });
+
+  for (const failure of ['network', 'expired', 'denied', 'deleted'] as const) {
+    it(`handles ${failure} during relay renewal without extending or restoring credentials`, async () => {
+      const h = await harness();
+      const { cleanup } = await setup(h, null);
+      try {
+        const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
+          sshRelay: { version: 1, ticket: 'aaa.bbb.ccc',
+            expiresAt: new Date(Date.now() + (failure === 'expired' ? -1000 : 120000)).toISOString() } };
+        await h.store.save('a', relay, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a' });
+        h.api.default.defaults.adapter = async request => {
+          assert.equal(request.url, '/provision/ssh-relay/refresh');
+          if (failure === 'deleted') await h.store.remove('a');
+          if (failure === 'denied') throw httpError(request, 403, { code: 'RELAY_TICKET_INVALID' });
+          throw new AxiosError('timeout of 15000ms exceeded', 'ECONNABORTED', request);
+        };
+        if (failure === 'network') {
+          equal(await h.provision.refreshRelayCredential('a', relay), relay);
+          assert.ok(JSON.stringify(h.state.logs).includes('PVN_TIMEOUT'));
+          assert.equal(JSON.stringify(h.state.logs).includes(relay.sshRelay.ticket), false);
+        } else if (failure === 'deleted') {
+          await assert.rejects(h.provision.refreshRelayCredential('a', relay), /RELAY_CREDENTIAL_CHANGED/);
+        } else {
+          await assert.rejects(h.provision.refreshRelayCredential('a', relay), (error: unknown) => {
+            return error instanceof h.provision.ProvisioningError &&
+              error.diagnostic.code === (failure === 'expired' ? 'PVN_TIMEOUT' : 'PVN_HTTP_403');
+          });
+        }
+        const stored = await h.store.get('a');
+        if (failure === 'deleted') assert.equal(stored.status, 'missing');
+        else equal(stored.value?.config, relay);
+      } finally { cleanup(); }
+    });
+  }
+
+  it('preserves safe network diagnostics before the SSH engine starts', async () => {
+    const h = await harness();
+    assert.equal(h.provision.toProvisioningError(new AxiosError('private endpoint', 'ECONNABORTED'), 1).diagnostic.code, 'PVN_TIMEOUT');
+    assert.equal(h.provision.toProvisioningError(new AxiosError('private endpoint', 'ERR_NETWORK'), 1).diagnostic.code, 'PVN_NETWORK');
+    const source = readFileSync(path.join(mobile, 'contexts', 'VpnContext.tsx'), 'utf8');
+    assert.match(source, /isAxiosError\(err\) \? toProvisioningError\(err, 1\)\.diagnostic\.code/);
+    assert.match(source, /code === 'PVN_TIMEOUT' \? 'log_timeout'/);
+    assert.match(source, /code === 'PVN_NETWORK' \? 'network_error'/);
   });
 
   it('keeps the Android handoff encrypted, atomic, attempt-specific and free of raw Intent credentials', () => {
