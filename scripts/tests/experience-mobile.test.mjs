@@ -9,7 +9,8 @@
  * valeurs brutes.
  *
  * Les invariants tenus :
- *  • la vérification des droits ne barre plus la route au tunnel ;
+ *  • la vérification des droits reste parallèle pour un accès autorisé ;
+ *  • un forfait bloqué doit être revérifié avant tout départ ;
  *  • le journal ne peut afficher que des clés de traduction ;
  *  • aucun hôte, aucune configuration, aucun secret ne peut y entrer ;
  *  • un basculement de profil se voit dès l'appui ;
@@ -25,7 +26,7 @@ import { test } from 'node:test';
 const racine = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const lireSource = (relatif) => readFileSync(path.join(racine, relatif), 'utf8');
 
-test('la vérification des droits ne barre plus la route au tunnel', () => {
+test('la vérification des droits reste parallèle pour un accès autorisé', () => {
   const contexte = lireSource('app-mobile/contexts/VpnContext.tsx');
   // Ces deux appels réseau étaient attendus avant la moindre étape, avec un
   // délai de garde de quatre secondes — sur un lien lent, plusieurs secondes
@@ -34,13 +35,13 @@ test('la vérification des droits ne barre plus la route au tunnel', () => {
   assert.match(contexte, /void verificationDroits;/);
 
   // L'invariant réel : les deux appels existent toujours — ils protègent — mais
-  // à l'INTÉRIEUR de la fonction lancée en parallèle, jamais sur le chemin
-  // direct de `connect()`. On le vérifie par les positions plutôt que par une
+  // à l'INTÉRIEUR de la fonction lancée en parallèle pour un accès autorisé.
+  // On le vérifie par les positions plutôt que par une
   // forme de texte, qui dépendrait des fins de ligne de la plateforme.
   const debutParallele = contexte.indexOf('const verificationDroits = (async () => {');
   const finParallele = contexte.indexOf('void verificationDroits;');
-  const rafraichir = contexte.indexOf('await refreshAccessState(false, undefined, 4000)');
-  const reconcilier = contexte.indexOf('await reconcileAccess()');
+  const rafraichir = contexte.indexOf('await refreshAccessState(false, undefined, 4000)', debutParallele);
+  const reconcilier = contexte.indexOf('await reconcileAccess()', debutParallele);
   assert.ok(debutParallele > -1 && finParallele > debutParallele, 'la vérification doit être lancée en parallèle');
   assert.ok(
     rafraichir > debutParallele && rafraichir < finParallele,
@@ -50,9 +51,27 @@ test('la vérification des droits ne barre plus la route au tunnel', () => {
     reconcilier > debutParallele && reconcilier < finParallele,
     'la réconciliation doit rester dans la fonction parallèle',
   );
-  // Et il n'en existe qu'une occurrence : aucune copie n'est restée sur le
-  // chemin direct.
-  assert.equal((contexte.match(/await refreshAccessState\(false, undefined, 4000\)/g) || []).length, 1);
+  // La seule autre occurrence sert à reconnaître le renouvellement d'un
+  // forfait déjà bloqué ; son garde est vérifié séparément ci-dessous.
+  assert.equal((contexte.match(/await refreshAccessState\(false, undefined, 4000\)/g) || []).length, 2);
+});
+
+test('un forfait bloqué ne repart qu’après une nouvelle vérification des droits', () => {
+  const contexte = lireSource('app-mobile/contexts/VpnContext.tsx');
+  const debutConnexion = contexte.indexOf('const connect = useCallback(async () => {');
+  const debutParallele = contexte.indexOf('const verificationDroits = (async () => {', debutConnexion);
+  assert.ok(debutConnexion > -1 && debutParallele > debutConnexion);
+  const avantDepart = contexte.slice(debutConnexion, debutParallele);
+
+  assert.match(avantDepart, /try\s*\{\s*requireProfileAccess\(selected\?\.meta \?\? \{ configId: selectedId \}\);\s*\} catch \(error\) \{/);
+  assert.match(
+    avantDepart,
+    /if \(issue\?\.code !== 'CONFIG_EXHAUSTED' && issue\?\.code !== 'CONFIG_EXPIRED'\) throw error;\s*try \{ await refreshAccessState\(false, undefined, 4000\); await reconcileAccess\(\); \}\s*catch \(refreshError\) \{ reportAccessSyncError\(refreshError\); \}\s*requireDeviceAccess\(\);\s*requireProfileAccess\(selected\?\.meta \?\? \{ configId: selectedId \}\);/,
+    'seuls quota et expiration permettent une actualisation ; même son échec doit réappliquer les gardes',
+  );
+  assert.equal((avantDepart.match(/await refreshAccessState\(false, undefined, 4000\)/g) || []).length, 1);
+  assert.equal((avantDepart.match(/await reconcileAccess\(\)/g) || []).length, 1);
+  assert.match(avantDepart, /addLog\(t\('access_profile_blocked'\)\);\s*return;/);
 });
 
 test('les lectures locales de la connexion sont menées ensemble', () => {
