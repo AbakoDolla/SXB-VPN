@@ -112,10 +112,22 @@ Explicitly chained HTTP payloads can consume intermediate redirects without
 following their Location. A final redirect alone is still refused. The parser
 bounds time, response count (16), headers (8 KiB), each body (64 KiB) and total
 input (128 KiB), rejects ambiguous framing/captive portals, and preserves SSH
-bytes. A short idle period after an accepted tunnel allows client-first SSH
-banners. An explicit WebSocket handshake on the final request remains framed.
+bytes. For a raw HTTP chain, parsing begins on JSch's first read, after its
+client banner is sent. It keeps consuming HTTP until SSH actually arrives;
+a 250 ms pause is not proof that an intermediate 200/101 is the last response.
+Client-first servers therefore work without leaking delayed headers or bodies
+into JSch. An explicit WebSocket handshake on the final request remains framed.
 Failed socket protection aborts before dialing; TLS failures close the physical
 socket, with no downgrade to cleartext.
+
+Each SSH ladder attempt uses the configured connection budget rather than a
+hidden 12-second cap. The JVM runner extracts that exact production connect
+call and exercises delayed HTTP replies (800 ms apart) and a 13-second
+authentication, followed by real bidirectional transfers. A single-strategy
+failure retains its actual cause instead of claiming the transport is unknown.
+The mobile journal distinguishes negotiation start from confirmed success and
+shows each bounded HTTP response without hosts, payloads or credentials.
+These loopback checks do not certify the supplied provider on a mobile network.
 
 On Android binaries exposing `encryptVpnConfig`/`decryptVpnConfig`, profile
 encryption happens in Android Keystore without exporting its AES key to JS.

@@ -1312,7 +1312,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(tlsRaw >= 0 && tlsWs >= 0 && ws >= 0, 'stratégies ladder absentes');
     assert.ok(raw < tlsRaw || raw < 0, 'raw doit rester le premier mode quand TLS est désactivé');
     assert.ok(tlsRaw < tlsWs && tlsWs < ws, 'ordre de la ladder incorrect');
-    assert.ok(nativeService.includes('candidate.connect(minOf(timeoutMs, 12_000))'));
+    assert.ok(nativeService.includes('candidate.connect(timeoutMs)'));
     assert.match(nativeService, /\.filter \{ !tlsEnabled \|\| it\.tls \}/);
     assert.match(nativeService, /if \(isAuthFailure\(attemptError\) \|\| isTlsIdentityFailure\(attemptError\)\) throw attemptError/);
   });
@@ -1334,8 +1334,11 @@ describe('garde-fous contre les régressions Android', () => {
     // injoignable un serveur lent mais valide ; seules des tentatives menées
     // en PARALLÈLE lèvent l'arbitrage, et cela demande une validation sur
     // appareil.
-    assert.ok(nativeService.includes('candidate.connect(minOf(timeoutMs, 12_000))'),
+    assert.ok(nativeService.includes('candidate.connect(timeoutMs)'),
       'le budget par tentative ne doit pas être raccourci');
+    assert.doesNotMatch(nativeService, /candidate\.connect\(minOf/);
+    assert.ok(nativeService.includes('timeout_ms=$timeoutMs'));
+    assert.ok(nativeService.includes('if (strategies.size == 1) throw primaryFailure'));
     for (const trace of ['budgetDecouverteMs', 'budgetEffectif', 'passes@']) {
       assert.ok(!nativeService.includes(trace),
         `« ${trace} » : la variante à budget raccourci a été mesurée puis retirée — voir le commentaire du service`);

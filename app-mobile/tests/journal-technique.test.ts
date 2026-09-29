@@ -47,7 +47,7 @@ describe('faits techniques — ce que le journal doit enfin montrer', () => {
     const f = analyserTrace('[SXB_TRACE] stage=HTTP_RESPONSE status=HTTP/1.1 200 OK header_count=6 body_bytes=unknown');
     assert.ok(f, 'la trace doit être reconnue');
     assert.deepEqual(f.valeurs, ['HTTP/1.1 200']);
-    assert.equal(f.niveau, 'ok');
+    assert.equal(f.niveau, 'info');
   });
 
   it('ne garde du statut HTTP que la version et le code', () => {
@@ -69,8 +69,30 @@ describe('faits techniques — ce que le journal doit enfin montrer', () => {
     assert.deepEqual(f?.valeurs, ['WEBSOCKET_RFC6455']);
   });
 
+  it('conserve les réponses successives sans annoncer une authentification réussie', () => {
+    const faits = [301, 200, 101, 200].map((code, i) =>
+      analyserTrace(`[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=${i + 1} status=${code} host=private.example`)!);
+    assert.equal(new Set(faits.map(f => f.etape)).size, 4);
+    assert.deepEqual(faits.map(f => f.valeurs), [['HTTP 301'], ['HTTP 200'], ['HTTP 101'], ['HTTP 200']]);
+    assert.ok(faits.every(f => f.niveau === 'info' && !JSON.stringify(f).includes('private.example')));
+    assert.equal(analyserTrace('[SXB_TRACE] stage=SSH_HANDSHAKE_START timeout_ms=30000')?.niveau, 'info');
+    assert.equal(analyserTrace('[SXB_TRACE] stage=SSH_HANDSHAKE_SUCCESS')?.niveau, 'ok');
+    for (const value of ['private.example', '200private', '999', '200 host']) {
+      assert.deepEqual(analyserTrace(`[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=1 status=${value}`)?.valeurs, []);
+    }
+    for (const n of ['0', '17', 'private.example', '1bad']) {
+      assert.equal(analyserTrace(`[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=${n} status=200`)?.etape, 'HTTP_CHAIN_RESPONSE');
+    }
+  });
+
   it('nomme la couche en échec sans exposer le message du serveur', () => {
     for (const [code, cle] of [
+      ['AUTH_FAILED', 'log_auth_failed'],
+      ['TCP_TIMEOUT', 'log_timeout'],
+      ['SSH_TIMEOUT', 'log_timeout'],
+      ['SSH_BANNER_MISSING', 'log_handshake_failed'],
+      ['TUNNEL_REFUSED', 'log_refused'],
+      ['CAPTIVE_PORTAL', 'log_captive_portal'],
       ['SSH_ACCOUNT_EXPIRED', 'log_ssh_account_expired'],
       ['HTTP_ENDPOINT_MISSING', 'log_http_endpoint_missing'],
       ['HTTP_BAD_REQUEST', 'log_http_bad_request'],
@@ -198,6 +220,12 @@ describe('câblage — le champ technique n’a qu’une seule source', () => {
   it('une même étape ne s’empile pas à chaque tentative', () => {
     assert.match(CONTEXTE, /if \(prev\.some\(s => s\.key === cle\)\) return prev;/);
   });
+
+  it('seul un succès confirmé reçoit une coche, les débuts restent des informations', () => {
+    assert.match(CONTEXTE, /fait\.niveau === 'ok' \? 'done' : 'info'/);
+    const journal = readFileSync(path.join(path.resolve(__dirname, '..'), 'app/journal.tsx'), 'utf8');
+    assert.match(journal, /case "info":\s+return \{ icon: "information-circle-outline"/);
+  });
 });
 
 /**
@@ -286,7 +314,7 @@ describe('parité — le journal lit la forme que le moteur écrit vraiment', ()
  */
 const ETAPES_ATTENDUES = [
   'SOCKET_CREATED', 'DNS_RESOLVE', 'TCP_CONNECTED', 'TLS_HANDSHAKE_SUCCESS',
-  'PAYLOAD_SENT', 'HTTP_RESPONSE', 'TRANSPORT_SELECTED', 'SSH_BANNER_WAIT',
+  'PAYLOAD_SENT', 'HTTP_RESPONSE', 'HTTP_CHAIN_RESPONSE', 'TRANSPORT_SELECTED', 'SSH_BANNER_WAIT',
   'LIBBOX_STARTED', 'SOCKS5_RELAY_CLOSED',
   'SSH_TUNNEL_START', 'SSH_ATTEMPT_START', 'SSH_HANDSHAKE_START',
   'SSH_OVER_TLS_START', 'SSH_HANDSHAKE_SUCCESS', 'SOCKS5_READY',
@@ -309,7 +337,8 @@ describe('cycle de vie — les étapes qui disent OÙ la connexion s’arrête',
 
   it('nomme le code d’échec, jamais autre chose', () => {
     const ok = analyserTrace('[SXB_TRACE] seq=8 elapsed_ms=5000 stage=VPN_FAILED code=SSH_TIMEOUT state=connecting');
-    assert.deepEqual(ok?.valeurs, ['SSH_TIMEOUT']);
+    assert.equal(ok?.cle, 'log_timeout');
+    assert.deepEqual(ok?.valeurs, []);
     assert.equal(ok?.niveau, 'echec');
 
     const sale = analyserTrace('[SXB_TRACE] seq=8 elapsed_ms=5000 stage=VPN_FAILED code=5.75.179.98');
