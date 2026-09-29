@@ -41,7 +41,12 @@ function selectProfile(rows, request, api) {
       matches.push({ profile, canonical, engine });
     }
   }
-  if (matches.length !== 1) throw new Error(matches.length ? 'ROLLOUT_PROFILE_AMBIGUOUS' : 'ROLLOUT_PROFILE_NOT_FOUND');
+  if (matches.length > 1) {
+    const error = new Error('ROLLOUT_PROFILE_AMBIGUOUS');
+    error.candidates = matches.map(({ profile }) => ({ profileId: profile.id, status: profile.status }));
+    throw error;
+  }
+  if (!matches.length) throw new Error('ROLLOUT_PROFILE_NOT_FOUND');
   return matches[0];
 }
 
@@ -61,6 +66,19 @@ function editAllowlist(source, parsed, profileId, enabled) {
     value: next.join(','),
     previousValue: previous,
   };
+}
+
+async function selectionMetadata(candidates, subscriptions) {
+  const result = [];
+  for (const candidate of candidates) {
+    const total = await subscriptions.count({ where: { profileId: candidate.profileId } });
+    const active = await subscriptions.count({
+      where: { profileId: candidate.profileId, status: 'active',
+        OR: [{ expireAt: null }, { expireAt: { gt: new Date() } }] },
+    });
+    result.push({ ...candidate, subscriptions: total, activeSubscriptions: active });
+  }
+  return result;
 }
 
 async function prepareRollout({ mode, profileId, expectedHash, confirmed }, request, deps) {
@@ -338,6 +356,14 @@ async function main() {
     });
     console.log(JSON.stringify({ status: 'applied', ...result, isolatedRelayTransfer: plan.transfer }));
   } catch (error) {
+    if (error?.message === 'ROLLOUT_PROFILE_AMBIGUOUS' && process.env.SXB_RELAY_MODE === 'inspect') {
+      try {
+        const candidates = await selectionMetadata(error.candidates, db.subscription);
+        console.log(JSON.stringify({ status: 'selection_required', candidates }));
+      } catch {
+        console.error('ROLLOUT_SELECTION_METADATA_FAILED');
+      }
+    }
     console.error(/^(?:ROLLOUT|PREFLIGHT|RELAY)_[A-Z_]+$/.test(error?.message || '') ? error.message : `ROLLOUT_EXECUTION_FAILED_${stage}`);
     process.exitCode = 1;
   } finally {
@@ -348,5 +374,5 @@ async function main() {
   }
 }
 
-module.exports = { PROFILE_SELECT, parseRequest, selectProfile, editAllowlist, prepareRollout, verifyTransfer, replaceFile, applyRollout };
+module.exports = { PROFILE_SELECT, parseRequest, selectProfile, selectionMetadata, editAllowlist, prepareRollout, verifyTransfer, replaceFile, applyRollout };
 if (require.main === module || !module.parent) main();

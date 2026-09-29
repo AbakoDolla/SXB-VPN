@@ -257,7 +257,10 @@ trusted `expectedFingerprint`. Do not put a password or private key in this
 request: the operation reads the existing encrypted canonical profile on the VPS.
 
 Run `inspect` first. It requires a unique exact SSH profile match, verifies the
-supplier key without authentication, then exercises the deployed gateway code
+supplier key without authentication. If several copies match, inspection stops
+with only their IDs, states and subscription counts; rerun with the intended
+`profile_id`, never automatically enable all copies. It then exercises the
+deployed gateway code
 on a one-shot loopback listener: pinned supplier authentication, SSH forwarding,
 a bounded public test page and both byte counters. It also checks the public TLS
 ingress rejects anonymous access. This is not a substitute for observing traffic
