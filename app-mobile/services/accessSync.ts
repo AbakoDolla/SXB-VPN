@@ -340,9 +340,13 @@ export async function refreshAccessState(wait = false, signal?: AbortSignal, tim
   if (Date.now() < nativeHandoffUntil) return true;
   if (controlRequest) {
     if (wait) return controlRequest.promise;
-    controlRequest.controller.abort();
-    try { await controlRequest.promise; }
-    catch (error) { if (responseInfo(error).status) reportAccessSyncError(error); }
+    const pending = controlRequest;
+    pending.controller.abort();
+    // Some Android adapters never settle an aborted long poll.
+    void pending.promise.catch(error => {
+      if (responseInfo(error).status) reportAccessSyncError(error);
+    });
+    if (controlRequest === pending) controlRequest = null;
   }
   const controller = new AbortController();
   const cancel = () => controller.abort();
@@ -359,6 +363,7 @@ export async function refreshAccessState(wait = false, signal?: AbortSignal, tim
       const response = await apiClient.get('/mobile/access-state', { params, signal: controller.signal, timeout });
       if (controller.signal.aborted) return false;
       const profiles = storeValue(await configStore.list()) ?? [];
+      if (controller.signal.aborted) return false;
       const applied = await applyAccessSnapshot(response.data, stamp, profiles);
       controlSupported = true;
       await reconcileAccess();
@@ -500,10 +505,29 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
   return operation;
 }
 
-/** A managed SSH cache must follow gateway rollout and the current device session. */
+function currentRelayCache(stored: configStore.StoredConfig, session: string | undefined): boolean {
+  if (!session || stored.meta.relaySession !== session || !isSshRelayConfig(stored.config)) return false;
+  const subscriptionId = stored.meta.subscriptionId || stored.meta.configId;
+  const expected = getAccessState().authority?.snapshot?.subscriptions.find(entry => entry.id === subscriptionId)
+    ?? connections.find(entry => entry.id === subscriptionId);
+  return expected?.configHash ? stored.meta.configHash === expected.configHash
+    : expected?.configVersion === undefined || stored.meta.configVersion === expected.configVersion;
+}
+
+/** Current relay credentials do not depend on a catalogue refresh before dialing. */
 export async function prepareSshConnection(id: string, stored: configStore.StoredConfig): Promise<Record<string, unknown>> {
   const protocol = String(stored.config.protocol || stored.meta.protocol || '').toLowerCase();
   if (!managedProfile(stored.meta) || !['ssh', 'ssh+payload'].includes(protocol)) return stored.config;
+  const identity = accessRequestStamp();
+  requireDeviceAccess();
+  requireProfileAccess(stored.meta);
+  const session = await currentRelaySession();
+  const cached = storeValue(await configStore.get(id));
+  if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
+  if (!cached) throw new Error('ACCESS_PROFILE_MISSING');
+  requireDeviceAccess();
+  requireProfileAccess(cached.meta);
+  if (currentRelayCache(cached, session)) return refreshRelayCredential(id, cached.config);
   try { await refreshMobileConfigs(); }
   catch (error) {
     const current = storeValue(await configStore.get(id));
@@ -516,12 +540,14 @@ export async function prepareSshConnection(id: string, stored: configStore.Store
     requireProfileAccess(current.meta);
     return current.config;
   }
+  if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
   const current = storeValue(await configStore.get(id));
   if (!current) throw new Error('ACCESS_PROFILE_MISSING');
+  requireDeviceAccess();
+  requireProfileAccess(current.meta);
   const remote = connections.find(entry => entry.id === id);
   const requiresRelay = remote?.sshRelayAvailable || current.meta.sshRelayRequired || !!current.config.sshRelay;
-  if (requiresRelay && (!isSshRelayConfig(current.config) ||
-      !current.meta.relaySession || current.meta.relaySession !== await currentRelaySession())) {
+  if (requiresRelay && !currentRelayCache(current, await currentRelaySession())) {
     const note = importNotes.get(id);
     throw new ProvisioningError('La configuration SSH doit être synchronisée avec cette session.', {
       code: note?.code || 'RELAY_BOUND_SESSION_REQUIRED', stage: 'request', attempts: 1, retryable: note?.retryable ?? false,

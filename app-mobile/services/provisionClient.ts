@@ -20,7 +20,7 @@ import * as configStore from './configStore';
 import { isCompleteOfflineConfig, isSshRelayConfig } from './configValidator';
 import apiClient from './apiClient';
 import { decryptSxbBlob, utf8Decode } from './aesGcm';
-import { accessIssueFromError, type AccessIssue } from './accessPolicy';
+import { accessIssueFromError, isRecord, type AccessIssue } from './accessPolicy';
 import { requireDeviceAccess, requireProfileAccess } from './accessState';
 import { accessRequestStamp, currentIdentityRequest } from './accessEvents';
 import { requireVpnConsent } from './privacyConsent';
@@ -42,16 +42,41 @@ export const RELAY_PROVISION_CODES = new Set([
 /** Refresh only the short-lived gateway credential, never the provider configuration. */
 export async function refreshRelayCredential(id: string, config: Record<string, unknown>) {
   if (!isSshRelayConfig(config)) throw new Error('RELAY_CONFIG_INVALID');
+  requireVpnConsent();
+  requireDeviceAccess();
+  requireProfileAccess({ configId: id });
   const previous = config.sshRelay as { ticket: string; expiresAt: string };
   if (Date.parse(previous.expiresAt) - Date.now() > 300_000) return config;
   const identity = accessRequestStamp();
-  requireVpnConsent();
-  requireProfileAccess({ configId: id });
-  const response = await apiClient.post('/provision/ssh-relay/refresh', { ticket: previous.ticket }, { timeout: 15000 });
+  let credential: unknown;
+  try {
+    const response = await apiClient.post('/provision/ssh-relay/refresh', { ticket: previous.ticket }, { timeout: 15000 });
+    credential = response.data;
+  } catch (error) {
+    if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
+    requireVpnConsent();
+    requireDeviceAccess();
+    requireProfileAccess({ configId: id });
+    const failure = toProvisioningError(error, 1);
+    if (!failure.diagnostic.httpStatus &&
+        ['PVN_NETWORK', 'PVN_TIMEOUT'].includes(failure.diagnostic.code) &&
+        Date.parse(previous.expiresAt) - Date.now() > 30_000) {
+      const current = await configStore.get(id);
+      if (current.status === 'error') throw current.error ?? new Error('CONFIG_STORAGE_UNAVAILABLE');
+      if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
+      requireDeviceAccess();
+      requireProfileAccess({ configId: id });
+      if (!current.value || !isSshRelayConfig(current.value.config) ||
+          current.value.config.sshRelay?.ticket !== previous.ticket) throw new Error('RELAY_CREDENTIAL_CHANGED');
+      console.warn('[Provision] Renewal deferred; current credential remains valid:', failure.diagnostic.code);
+      return current.value.config;
+    }
+    throw failure;
+  }
   if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
   requireVpnConsent();
-  const credential = response.data;
-  if (!credential || !isSshRelayConfig({ ...config, sshRelay: { ...credential, version: 1 } }) ||
+  if (!isRecord(credential) || typeof credential.ticket !== 'string' || typeof credential.expiresAt !== 'string' ||
+      !isSshRelayConfig({ ...config, sshRelay: { ...credential, version: 1 } }) ||
       Date.parse(credential.expiresAt) <= Date.now()) throw new Error('RELAY_CREDENTIAL_INVALID');
   return (await configStore.replaceRelayCredential(id, previous.ticket, {
     ticket: credential.ticket, expiresAt: credential.expiresAt,
@@ -94,7 +119,7 @@ function headerValue(headers: unknown, name: string): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : undefined;
 }
 
-function toProvisioningError(error: unknown, attempts: number): ProvisioningError {
+export function toProvisioningError(error: unknown, attempts: number): ProvisioningError {
   if (error instanceof ProvisioningError) return error;
 
   if (axios.isAxiosError(error)) {

@@ -27,7 +27,8 @@ import {
   isQuotaExhausted, isConfigExpired,
 } from '@/services/offlineStorage';
 import type { QuotaData } from '@/services/offlineStorage';
-import { ProvisioningError, provisionAndStore } from '@/services/provisionClient';
+import { ProvisioningError, provisionAndStore, toProvisioningError } from '@/services/provisionClient';
+import { isAxiosError } from 'axios';
 import { accessIssueFromError, blocksDevice, deviceAccess as selectDeviceAccess, profileRestriction, type ProfileIdentity, type ProfileStatus } from '@/services/accessPolicy';
 import { getAccessState, requireDeviceAccess, requireProfileAccess, syncNativeAccessState } from '@/services/accessState';
 import { accessRequestStamp, currentAccessRequest, currentIdentityRequest } from '@/services/accessEvents';
@@ -2258,12 +2259,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       stopEchelon();
       basculeEnCoursRef.current = false;
       const issue = accessIssueFromError(err);
-      const code = issue?.code || (err instanceof ProvisioningError ? err.diagnostic.code : undefined);
+      const code = issue?.code || (err instanceof ProvisioningError ? err.diagnostic.code
+        : isAxiosError(err) ? toProvisioningError(err, 1).diagnostic.code : undefined);
       const messageKey = code === 'RELAY_CLIENT_UPDATE_REQUIRED' ? 'ssh_update_required'
         : code === 'RELAY_BOUND_SESSION_REQUIRED' ? 'ssh_activation_required'
         : code === 'RELAY_PROFILE_NOT_READY' ? 'ssh_profile_not_ready'
         : code === 'CONFIG_EXHAUSTED' ? 'step_quota_exhausted'
-        : code === 'CONFIG_EXPIRED' ? 'stop_profil_expire' : 'step_error';
+        : code === 'CONFIG_EXPIRED' ? 'stop_profil_expire'
+        : code === 'PVN_TIMEOUT' ? 'log_timeout'
+        : code === 'PVN_NETWORK' ? 'network_error' : 'step_error';
       addStepLog('connection_error', messageKey, 'error', code);
       addLog(`❌ Erreur : ${err?.message || 'Connexion échouée'}`);
       setVpnState('error');
