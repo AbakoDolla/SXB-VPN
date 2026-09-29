@@ -139,6 +139,19 @@ interface Etape {
 // suffit à les écarter : rien n'a besoin de les interdire.
 
 const ETAPES: Record<string, Etape> = {
+  SSH_GATEWAY_TLS_REQUIRED: { cle: 'tech_gateway_start', niveau: 'info', champs: {} },
+  SSH_GATEWAY_START: { cle: 'tech_gateway_start', niveau: 'info', champs: { timeout_ms: duree } },
+  SSH_GATEWAY_TCP: { cle: 'tech_gateway_tcp', niveau: 'ok', champs: {} },
+  SSH_GATEWAY_TLS: { cle: 'tech_gateway_tls', niveau: 'ok', champs: { protocol: versionTls } },
+  SSH_GATEWAY_RESPONSE: {
+    cle: 'tech_gateway_response', niveau: 'info',
+    champs: { status: v => /^[1-5]\d{2}$/.test(v) ? `HTTP ${v}` : null },
+  },
+  SSH_GATEWAY_READY: { cle: 'tech_gateway_ready', niveau: 'ok', champs: {} },
+  SSH_GATEWAY_FAILED: {
+    cle: 'tech_gateway_failed', niveau: 'echec',
+    champs: { phase: parmi('TCP', 'TLS', 'PROOF', 'HTTP'), error_type: nomException },
+  },
   SOCKET_CREATED: {
     cle: 'tech_socket_created',
     niveau: 'info',

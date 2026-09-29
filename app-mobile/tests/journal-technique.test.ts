@@ -46,6 +46,19 @@ function neDivulgueRien(rendu: string, origine: string) {
 }
 
 describe('faits techniques — ce que le journal doit enfin montrer', () => {
+  it('distingue TCP, TLS, preuve appareil et HTTP de la passerelle sans révéler son ticket', () => {
+    const stages = ['START', 'TCP', 'TLS', 'RESPONSE', 'READY', 'FAILED'];
+    for (const stage of stages) {
+      const trace = `[SXB_TRACE] stage=SSH_GATEWAY_${stage} timeout_ms=15000 protocol=TLSv1.3 status=403 phase=HTTP error_type=IOException ticket=secret.jwt host=private.example`;
+      const fact = analyserTrace(trace);
+      assert.ok(fact, stage);
+      assert.ok(Object.hasOwn(fr, fact.cle) && Object.hasOwn(en, fact.cle), fact.cle);
+      assert.doesNotMatch(JSON.stringify(fact), /secret\.jwt|private\.example/);
+    }
+    assert.deepEqual(analyserTrace('[SXB_TRACE] stage=SSH_GATEWAY_RESPONSE status=403')?.valeurs, ['HTTP 403']);
+    assert.deepEqual(analyserTrace('[SXB_TRACE] stage=SSH_GATEWAY_FAILED phase=SECRET error_type=secret.jwt')?.valeurs, []);
+  });
+
   it('conserve la cause du statut natif sans dépendre des lignes de journal', () => {
     for (const [code, cle] of [
       ['SSH_SOCKET_PROTECT_FAILED', 'log_socket_protect_failed'],

@@ -182,8 +182,8 @@ describe("cloisonnement de /api/presence", () => {
     // et ferait croire l'interface à un chiffre qu'elle ne reçoit pas.
     assert.doesNotMatch(source, /scope: req\.user\?\.role === "RESELLER"/,
       "Le libellé se déduisait du rôle, plus de la portée appliquée");
-    assert.match(source, /scope: portee\.porteeClients \? "own" : "platform"/,
-      "Le libellé doit suivre la portée réellement appliquée");
+    assert.match(source, /scope: estCloisonne\(req\.user\?\.role\) \? "own" : "platform"/,
+      "Le super-administrateur a une vue plateforme filtrée, l'administrateur reste limité à son parc");
   });
 
   it("demande la portée au point unique, pour tous les rôles", () => {

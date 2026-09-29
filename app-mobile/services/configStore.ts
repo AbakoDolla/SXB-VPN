@@ -24,6 +24,9 @@ export interface ConfigMeta {
   quotaTotal?: number; quotaUsed?: number; expiryDate?: string | null; configVersion?: number;
   configHash?: string | null; isActive?: boolean; savedAt?: string; dataToken?: string;
   source?: 'backend' | 'manual'; accessStatus?: ProfileStatus;
+  /** Cache freshness only; the server still authenticates every relay binding. */
+  relaySession?: string;
+  sshRelayRequired?: boolean;
   /**
    * Accès issu d'un ESSAI GRATUIT, recopié depuis `/mobile/connections`.
    *

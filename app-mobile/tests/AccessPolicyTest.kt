@@ -70,11 +70,29 @@ fun main() {
         val restored = SxbAccessPolicy.applySnapshot(blocked, snapshot("r2"), JSONArray().put(a).put(b))
         check(restored.getJSONArray("restrictions").length() == 0)
     }
-    checkCase("expiry and quota remain advisory and extensions preserve identity") {
+    checkCase("expiry and quota stop only the affected tunnel and extensions preserve identity") {
         val next = SxbAccessPolicy.applySnapshot(authority(), snapshot("r1", a = "expired", b = "exhausted"), JSONArray().put(a).put(b))
-        check(SxbAccessPolicy.block(next, a) == null && SxbAccessPolicy.block(next, b) == null)
+        check(SxbAccessPolicy.block(next, a) == "CONFIG_EXPIRED")
+        check(SxbAccessPolicy.block(next, b) == "CONFIG_EXHAUSTED")
+        check(SxbAccessPolicy.deviceBlock(next) == null)
+        check(SxbAccessPolicy.authority(next).getJSONArray("restrictions").length() == 2)
         val renewed = SxbAccessPolicy.applySnapshot(next, snapshot("r2"), JSONArray().put(a).put(b))
         check(renewed.getString("session") == "session")
+        check(SxbAccessPolicy.block(renewed, a) == null && SxbAccessPolicy.block(renewed, b) == null)
+    }
+    checkCase("spent inactive plan does not block an active plan sharing its SSH configuration") {
+        val next = SxbAccessPolicy.applySnapshot(authority(), snapshot("r1", b = "exhausted"), JSONArray().put(a).put(b))
+        check(SxbAccessPolicy.block(next, a) == null)
+        check(SxbAccessPolicy.block(next, b) == "CONFIG_EXHAUSTED")
+    }
+    for (status in listOf("expired", "exhausted")) {
+        checkCase("explicit $status response persists across an offline reload") {
+            val issue = JSONObject("""{"code":"CONFIG_${status.uppercase()}","scope":"subscription","temporary":true,"subscriptionId":"a"}""")
+            val next = SxbAccessPolicy.applyIssue(authority(), issue, JSONArray().put(a).put(b))
+            val restored = SxbAccessPolicy.authority(JSONObject(next.toString()))
+            check(SxbAccessPolicy.block(restored, a) == "CONFIG_${status.uppercase()}")
+            check(SxbAccessPolicy.block(restored, b) == null)
+        }
     }
     checkCase("complete absence removes only backend entries") {
         val empty = snapshot("empty").put("subscriptions", JSONArray())

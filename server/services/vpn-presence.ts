@@ -390,11 +390,11 @@ export function viderCachePresence(): void {
  * parc à chaque appel. Conséquence assumée : un appareil tout juste activé
  * peut apparaître avec au plus une minute de retard.
  */
-async function lireIdentites(db: any, now: Date): Promise<IdentiteAppareil[]> {
-  if (cacheIdentites && cacheIdentites.expireAt > now.getTime()) return cacheIdentites.identites;
+async function lireIdentites(db: any, now: Date, portee?: Record<string, unknown> | null): Promise<IdentiteAppareil[]> {
+  if (!portee && cacheIdentites && cacheIdentites.expireAt > now.getTime()) return cacheIdentites.identites;
 
   const clients = await db.vpnClient.findMany({
-    where: { deviceId: { not: null }, status: "active" },
+    where: { deviceId: { not: null }, status: "active", ...(portee ? { AND: [portee] } : {}) },
     take: PRESENCE_MAX_IDENTITIES,
     select: {
       id: true,
@@ -420,7 +420,7 @@ async function lireIdentites(db: any, now: Date): Promise<IdentiteAppareil[]> {
     managedByOwner: client.managedBy?.role?.name === "OWNER",
   }));
 
-  cacheIdentites = { expireAt: now.getTime() + PRESENCE_INDEX_TTL_MS, identites };
+  if (!portee) cacheIdentites = { expireAt: now.getTime() + PRESENCE_INDEX_TTL_MS, identites };
   return identites;
 }
 
@@ -593,8 +593,10 @@ export async function listerConnectes(
 }> {
   const now = options.now ?? new Date();
   const signaux = await lireSignauxPresents(db, now);
-  const identites = await lireIdentites(db, now);
-  const visibles = filtrerIdentites(identites, options);
+  const identites = await lireIdentites(db, now, options.porteeClients);
+  const visibles = options.masquerProprietaire
+    ? identites.filter(identite => !identite.ownerAccount && !identite.managedByOwner)
+    : identites;
   const index = indexerPseudonymes(visibles, secret);
 
   // Le filtre de présence est réappliqué en mémoire : la requête le pose déjà,
@@ -624,78 +626,6 @@ export async function listerConnectes(
     orphelins,
     devicesTruncated: signaux.length >= PRESENCE_MAX_DEVICES,
   };
-}
-
-/**
- * Applique le cloisonnement en mémoire sur l'index mutualisé.
- *
- * L'index des couples est construit une fois pour toute la plateforme (c'est
- * lui qui coûte le hachage) ; la restriction par revendeur est ensuite un
- * simple filtre, appliqué AVANT tout rapprochement — un revendeur ne peut donc
- * jamais recevoir une ligne qui ne lui appartient pas.
- */
-function filtrerIdentites(identites: IdentiteAppareil[], options: OptionsPresence): IdentiteAppareil[] {
-  // Furtivité : hors OWNER, les appareils rattachés au OWNER n'existent pas —
-  // qu'il les porte sous son compte ou qu'il les gère. Même règle qu'à la
-  // lecture des KPIs, appliquée au même endroit.
-  const visibles = options.masquerProprietaire
-    ? identites.filter((identite) => identite.ownerAccount !== true && identite.managedByOwner !== true)
-    : identites;
-  const portee = options.porteeClients;
-  if (!portee) return visibles;
-  // Le filtre reçu peut être un `AND` (compartiment administrateur : furtivité
-  // OWNER + gestionnaire) ou un `OR` (revendeur : attribution explicite ou
-  // rattachement historique). Les deux formes sont traitées, car une forme non
-  // reconnue ne doit jamais se lire comme « aucune restriction ».
-  const evalue = (condition: any, identite: IdentiteAppareil): boolean => {
-    if (!condition || typeof condition !== "object") return false;
-    if (Array.isArray(condition.AND)) return condition.AND.every((c: any) => evalue(c, identite));
-    if (Array.isArray(condition.OR)) return condition.OR.some((c: any) => evalue(c, identite));
-    if (condition.id === "__aucun__") return false;
-    // ── Listes d'identifiants — `{ id: { in: [...] } }` / `{ notIn: [...] }` ──
-    //
-    // C'est la forme que produit `exclureIdentifiants()` pour retrancher les
-    // comptes d'essai. Faute d'être traitée ici, elle tombait dans le `return
-    // false` final : la carte « CONNECTÉS » du tableau de bord affichait donc
-    // ZÉRO en permanence — y compris pour le propriétaire, et alors même que
-    // des clients étaient bel et bien connectés. Pire, comme les essais sont
-    // comptés par différence (`total - connectedNow`), TOUS les connectés
-    // basculaient dans « essais gratuits » : quatre clients commerciaux réels
-    // étaient présentés comme quatre essayeurs.
-    //
-    // Mesuré en production avant correction : présence réelle 4, carte 0, et
-    // `connectedTrials` 4 sur un parc qui n'avait aucun essai connecté.
-    if (condition.id && typeof condition.id === "object") {
-      const liste = condition.id as { in?: unknown; notIn?: unknown };
-      if (Array.isArray(liste.notIn)) return !liste.notIn.map(String).includes(String(identite.clientId));
-      if (Array.isArray(liste.in)) return liste.in.map(String).includes(String(identite.clientId));
-    }
-    // Furtivité exprimée en filtre Prisma : ici elle est déjà appliquée
-    // au-dessus, la condition est donc satisfaite par construction.
-    if (condition.user?.role?.name?.not === "OWNER") return identite.ownerAccount !== true;
-    if (condition.managedBy?.role?.name?.not === "OWNER") return identite.managedByOwner !== true;
-    if (condition.managedById !== undefined) return identite.managedById === condition.managedById;
-    if (condition.resellerId !== undefined && condition.resellerId !== null) {
-      return identite.resellerId === condition.resellerId;
-    }
-    if (condition.resellerId === null) {
-      return identite.resellerId === null && identite.userId === condition.userId;
-    }
-    // ── Un refus, mais JAMAIS un refus muet ──────────────────────────────────
-    //
-    // Refuser reste le choix sûr : une forme non reconnue ne doit pas se lire
-    // comme « aucune restriction », sous peine de fuite entre exploitants.
-    // Mais refuser EN SILENCE est ce qui a permis au défaut ci-dessus de vivre
-    // sans être vu : le compteur affichait zéro, et rien nulle part ne disait
-    // pourquoi. On trace donc la forme incomprise — le prochain filtre ajouté
-    // en amont se signalera dans les journaux au lieu de vider un compteur.
-    console.error(
-      "[presence] condition de portée non reconnue, appareils écartés par prudence:",
-      JSON.stringify(condition)?.slice(0, 200),
-    );
-    return false;
-  };
-  return visibles.filter((identite) => evalue(portee, identite));
 }
 
 /**

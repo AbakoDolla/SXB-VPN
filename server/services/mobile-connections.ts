@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../database';
 import { consumeSessionProof, type BoundClaims } from './mobile-session-security';
 import { proofFor, securityFailure } from './mobile-proof';
-import { subscriptionAccessStatus } from './access-lifecycle';
+import { MobileAccessError, subscriptionAccessFailure, subscriptionAccessStatus } from './access-lifecycle';
 import { authorizeRelayBinding } from './ssh-relay-auth';
 import { relayProfileEnabled } from './ssh-relay-ticket';
 
@@ -26,8 +26,10 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
         where: { id: input.subscriptionId, clientId: claims.clientId },
         include: { profile: { select: { id: true, protocol: true, status: true, createdAt: true } } },
       });
-      if (!subscription || subscriptionAccessStatus(subscription) !== 'active' ||
+      if (!subscription ||
           (subscription.deviceId && subscription.deviceId !== claims.deviceId)) securityFailure('OWNERSHIP_FORBIDDEN', 403);
+      const status = subscriptionAccessStatus(subscription);
+      if (status !== 'active') throw new MobileAccessError(403, subscriptionAccessFailure(status, subscription.id));
       if (!input.relayTicket && relayProfileEnabled(subscription.profile)) {
         securityFailure('RELAY_REQUIRED', 409);
       }

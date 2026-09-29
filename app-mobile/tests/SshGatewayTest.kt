@@ -11,10 +11,13 @@ fun main(args: Array<String>) {
     val peer = JSONObject(File(args[0]).readText())
     System.setProperty("sxb.test.gateway.url", "https://localhost:${peer.getInt("gatewayPort")}/api")
     var protected: Socket? = null
+    val traces = mutableListOf<String>()
     fun factory(allow: Boolean) = SxbGatewaySocketFactory(
         Context(), "synthetic.gateway.ticket", "synthetic-device",
         "11111111-1111-4111-a111-111111111111",
-    ) { socket -> check(!socket.isConnected); protected = socket; allow }
+        protectSocket = { socket -> check(!socket.isConnected); protected = socket; allow },
+        trace = { traces.add(it) },
+    )
     factory(false).use {
         try { it.createSocket("ignored.invalid", 1); error("Protection failure accepted") }
         catch (error: IOException) { check(protected?.isClosed == true && protected?.isConnected == false) }
@@ -58,5 +61,10 @@ fun main(args: Array<String>) {
         check(headers.contains("synthetic.gateway.ticket"))
         check(!headers.contains(peer.getString("password")) && !headers.contains("upstream.invalid"))
     }
+    check(traces.any { it.contains("stage=SSH_GATEWAY_FAILED phase=TCP") })
+    check(traces.any { it.contains("stage=SSH_GATEWAY_FAILED phase=TLS") })
+    check(traces.any { it.contains("stage=SSH_GATEWAY_RESPONSE status=101") })
+    check(traces.any { it.contains("stage=SSH_GATEWAY_READY") })
+    check(traces.none { it.contains("synthetic.gateway.ticket") || it.contains("localhost") || it.contains(peer.getString("password")) })
     println("PASS: native protected TLS gateway, hostname rejection, cancellation, proof request, JSch none auth and full download")
 }

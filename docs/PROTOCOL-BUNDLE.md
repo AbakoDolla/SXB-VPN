@@ -219,6 +219,41 @@ Refresh requires the same valid session, device, subscription and profile hash.
 Native reconnect reuses its current ticket; it does not extend an expired
 activation session or renew an expired credential independently of JS.
 
+Managed SSH connections reconcile their assigned profile before dialing.
+Gateway rollout and activation-session changes invalidate the local cache's
+session marker, even when the provider configuration hash is unchanged.
+Reprovisioning issues a new device-bound ticket; it never relaxes the server's
+session/device checks. Known relay requirements are also saved in metadata so a
+failed migration cannot fall back to direct SSH after a restart or network loss.
+Unprotected direct SSH retains its cached-access offline path; HTTP refusals are
+never treated as an offline authorization. A failed migration preserves the encrypted file but does
+not dial obsolete direct credentials. Legacy installations must update and
+reactivate; an already-activated device requiring key enrollment still needs
+its administrator's explicit authorization. TCP, TLS, proof and HTTP gateway
+phases appear in the activity journal without hosts, payloads or tickets.
+
+Server-confirmed `expired` and `exhausted` subscription states now stop the
+affected tunnel in both JavaScript and the native background observer. These
+reversible restrictions survive restart, retain the encrypted configuration,
+and are lifted by an authoritative active snapshot after renewal/top-up.
+Another subscription sharing the same SSH provider remains independent.
+The notice links to plan activation rather than deactivating the device.
+
+Online-presence identity queries apply the canonical Prisma role scope before
+matching health/usage signals. Only unscoped identity queries use the shared
+cache. SUPER_ADMIN sees the authorized platform view (OWNER privacy retained);
+ADMIN sees only its managed activations, including in dashboard counts.
+
+APK deployment and the in-app update publication are separate. The manual
+`mobile-release-rollout.yml` workflow runs on `main`, serialized with APK
+publication. `inspect` returns aggregate activation/legacy-session counts and a
+publication revision, never device identifiers or credentials. `publish-all`
+requires explicit confirmation, that revision, and the exact deployed APK
+version/SHA256. It verifies the on-disk APK and manifest before clearing only
+the notification's device targeting. It does not force installation, enroll
+keys, change accounts/quotas, or alter gateway policy. Repeating an already
+applied publication is idempotent; stale revisions and downgrades are refused.
+
 The server meters forwarded plaintext channel bytes transactionally before
 delivery, applies backpressure and prevents concurrent quota overspend. Mobile
 usage receipts do not debit them again. Connections are revalidated every

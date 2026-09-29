@@ -27,13 +27,13 @@ import {
   isQuotaExhausted, isConfigExpired,
 } from '@/services/offlineStorage';
 import type { QuotaData } from '@/services/offlineStorage';
-import { ProvisioningError, provisionAndStore, refreshRelayCredential } from '@/services/provisionClient';
+import { ProvisioningError, provisionAndStore } from '@/services/provisionClient';
 import { accessIssueFromError, blocksDevice, deviceAccess as selectDeviceAccess, profileRestriction, type ProfileIdentity, type ProfileStatus } from '@/services/accessPolicy';
 import { getAccessState, requireDeviceAccess, requireProfileAccess, syncNativeAccessState } from '@/services/accessState';
 import { accessRequestStamp, currentAccessRequest, currentIdentityRequest } from '@/services/accessEvents';
 import {
   flushRemoteDeletions,
-  getImportNotes, getRemoteConnections, prepareNativeAccess, reconcileAccess, refreshAccessState, refreshMobileConfigs,
+  getImportNotes, getRemoteConnections, prepareNativeAccess, prepareSshConnection, reconcileAccess, refreshAccessState, refreshMobileConfigs,
   registerAccessRuntime, reportAccessSyncError, storeValue, wakeAccessObservation, type ImportNote,
 } from '@/services/accessSync';
 import * as configStore from '@/services/configStore';
@@ -1862,10 +1862,22 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     try {
       requireDeviceAccess();
       const selected = storeValue(await configStore.get(selectedId));
-      requireProfileAccess(selected?.meta ?? { configId: selectedId });
+      try {
+        requireProfileAccess(selected?.meta ?? { configId: selectedId });
+      } catch (error) {
+        const issue = accessIssueFromError(error);
+        if (issue?.code !== 'CONFIG_EXHAUSTED' && issue?.code !== 'CONFIG_EXPIRED') throw error;
+        try { await refreshAccessState(false, undefined, 4000); await reconcileAccess(); }
+        catch (refreshError) { reportAccessSyncError(refreshError); }
+        requireDeviceAccess();
+        requireProfileAccess(selected?.meta ?? { configId: selectedId });
+      }
       runningProfileRef.current = selected?.meta ?? { configId: selectedId };
     } catch (error) {
       reportAccessSyncError(error);
+      const issue = accessIssueFromError(error);
+      addStepLog('access', issue?.code === 'CONFIG_EXHAUSTED' ? 'step_quota_exhausted' :
+        issue?.code === 'CONFIG_EXPIRED' ? 'stop_profil_expire' : 'access_profile_blocked', 'error', issue?.code);
       addLog(t('access_profile_blocked'));
       return;
     }
@@ -1977,6 +1989,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
         const localResult = await configStore.get(selectedId);
         if (localResult.status === 'error') {
+          addStepLog('config', 'step_error', 'error', 'PVN_STORE_FAILED');
           addLog('⚠️ Stockage temporairement illisible — nouvelle tentative…');
           setIsConnecting(false);
           return;
@@ -1990,17 +2003,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         );
         if (hasCompleteOfflineConfig && offlineEntry?.config) {
           if (isCompleteOfflineConfig(offlineEntry.config).complete) {
-            configToUse = { ...offlineEntry.config };
+            configToUse = { ...(localResult.value
+              ? await prepareSshConnection(selectedId, localResult.value)
+              : offlineEntry.config) };
             if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
             if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
-            addLog('✅ Configuration sécurisée chargée — mode hors-ligne, aucun provisionnement requis');
+            addLog('✅ Configuration sécurisée chargée');
           }
-          if (configToUse?.sshRelay) configToUse = await refreshRelayCredential(selectedId, configToUse);
         }
 
-        // Une configuration complète en cache est autonome : ne jamais appeler
-        // provisionAndStore() dans connect(). Le provisionnement initial s'effectue
-        // uniquement lors de l'activation/import ou lorsqu'aucun profil complet n'existe.
+        // Non-SSH profiles keep their offline path. Managed SSH first reconciles
+        // gateway policy and credentials bound to the current device session.
         if (!configToUse) {
           const dataToken =
             ((vpnConfig as any)?.dataToken as string | undefined) ??
@@ -2070,6 +2083,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
               addLog('✅ Configuration locale chargée en mode hors-ligne');
             }
           } else {
+            addStepLog('config', 'no_vpn_connections', 'error', 'PVN_TOKEN_MISSING');
             addLog('❌ Aucune configuration disponible — activez un forfait');
             setVpnState('error');
             setIsConnecting(false);
@@ -2081,6 +2095,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // a été altéré ou déchiffré avec une clé étrangère : se connecter avec
         // enverrait l'utilisateur vers un serveur inventé.
         if (estLeurre(configToUse)) {
+          addStepLog('config', 'step_error', 'error', 'CONFIG_INVALID');
           addLog('❌ Configuration locale altérée — réactivez votre jeton');
           setVpnState('error');
           setIsConnecting(false);
@@ -2088,6 +2103,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (!configToUse.host && configToUse.protocol !== 'wireguard' && configToUse.protocol !== 'singbox') {
+          addStepLog('config', 'step_error', 'error', 'CONFIG_INVALID');
           addLog('❌ Configuration invalide — champ "host" manquant');
           setVpnState('error');
           setIsConnecting(false);
@@ -2096,6 +2112,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
         const completeness = isCompleteOfflineConfig(configToUse);
         if (!completeness.complete) {
+          addStepLog('config', 'step_error', 'error', 'PVN_CONFIG_INCOMPLETE');
           addLog(`❌ Configuration incomplète — champs manquants : ${completeness.missing.join(', ')}`);
           setVpnState('error');
           setIsConnecting(false);
@@ -2105,20 +2122,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         updateStepStatus('config', 'done');
         addStepLog('quota', 'step_quota_check', 'active');
 
-        // En mode hors-ligne / zero-rated, si une configuration locale complète existe,
-        // on autorise la tentative de connexion même si le quota enregistré localement semble épuisé,
-        // car l'opérateur mobile zero-rated permet d'atteindre le serveur VPN sans data classique.
-        //
-        // ⚡ Les deux lectures sont indépendantes : les enchaîner ajoutait un
-        // aller-retour de stockage pour rien, juste avant l'ouverture du tunnel.
         const [exhausted, expired] = await Promise.all([isQuotaExhausted(), isConfigExpired()]);
-        if (exhausted) {
-          addLog('ℹ️ Quota local estimé épuisé — tentative de connexion quand même (zéro-rated / hors-ligne)');
-        }
-        if (expired) {
-          addLog('ℹ️ Date d’expiration locale atteinte — tentative de connexion quand même en mode de secours');
-        }
-        addStepLog('quota', 'step_quota_ok', 'done');
+        if (exhausted || expired) await verificationDroits;
+        requireProfileAccess(runningProfileRef.current ?? { configId: selectedId });
+        addStepLog('quota', exhausted || expired ? 'step_quota_pending' : 'step_quota_ok', 'done');
 
         // Une déconnexion demandée pendant le provisionnement annule le départ
         // avant tout appel natif long ou ouverture de tunnel.
@@ -2250,6 +2257,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // tard une tentative que rien ne justifie.
       stopEchelon();
       basculeEnCoursRef.current = false;
+      const issue = accessIssueFromError(err);
+      const code = issue?.code || (err instanceof ProvisioningError ? err.diagnostic.code : undefined);
+      const messageKey = code === 'RELAY_CLIENT_UPDATE_REQUIRED' ? 'ssh_update_required'
+        : code === 'RELAY_BOUND_SESSION_REQUIRED' ? 'ssh_activation_required'
+        : code === 'RELAY_PROFILE_NOT_READY' ? 'ssh_profile_not_ready'
+        : code === 'CONFIG_EXHAUSTED' ? 'step_quota_exhausted'
+        : code === 'CONFIG_EXPIRED' ? 'stop_profil_expire' : 'step_error';
+      addStepLog('connection_error', messageKey, 'error', code);
       addLog(`❌ Erreur : ${err?.message || 'Connexion échouée'}`);
       setVpnState('error');
       setIsConnecting(false);

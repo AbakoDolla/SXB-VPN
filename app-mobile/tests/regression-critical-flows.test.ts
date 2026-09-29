@@ -1108,7 +1108,8 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(accessSync, /restriction\?\.status === 'revoked' \|\| restriction\?\.status === 'deleted'/);
     assert.match(accessPolicy, /CONFIG_EXPIRED/);
     assert.doesNotMatch(vpnContext, /purgeExpired/);
-    assert.match(vpnContext, /tentative de connexion quand même \(zéro-rated \/ hors-ligne\)/);
+    assert.match(vpnContext, /if \(exhausted \|\| expired\) await verificationDroits/);
+    assert.doesNotMatch(vpnContext, /tentative de connexion quand même/);
   });
 
   it('détecte de manière robuste le mode WebSocket vs SSH brut via peeking d’octet après 101', () => {

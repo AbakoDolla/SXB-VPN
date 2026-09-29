@@ -17,6 +17,7 @@ import {
   viderCachePresence,
 } from "../services/vpn-presence";
 import { pseudonymizeMobileDevice } from "../services/mobile-pseudonym";
+import { FURTIVITE_OWNER } from "../middleware/rbac/owner";
 
 const SECRET = "0123456789abcdef0123456789abcdef";
 const MAINTENANT = new Date("2026-09-11T12:00:00.000Z");
@@ -52,13 +53,22 @@ function identite(overrides: Record<string, unknown> = {}) {
 }
 
 /**
- * Base simulée : elle IGNORE volontairement les clauses `where`.
- *
- * C'est le seul moyen de prouver que la règle « connecté maintenant » tient
- * dans le code et pas seulement dans une requête SQL. Si demain la requête
- * changeait, ces tests continueraient de garantir qu'un appareil muet n'est pas
- * compté comme connecté.
+ * La fraîcheur des signaux est contrôlée par le code ; la portée des identités
+ * est exécutée par Prisma, sans réinterprétation partielle dans le service.
  */
+function matches(row: any, where: any): boolean {
+  return Object.entries(where).every(([key, value]: [string, any]) => {
+    if (key === 'AND') return value.every((part: any) => matches(row, part));
+    if (key === 'OR') return value.some((part: any) => matches(row, part));
+    const actual = row?.[key] ?? null;
+    if (value === null || typeof value !== 'object') return actual === value;
+    if ('not' in value) return actual !== value.not;
+    if ('in' in value) return value.in.includes(actual);
+    if ('notIn' in value) return !value.notIn.includes(actual);
+    return matches(actual, value);
+  });
+}
+
 function baseSimulee(options: {
   signaux?: any[];
   clients?: any[];
@@ -78,12 +88,13 @@ function baseSimulee(options: {
       findMany: async () => options.trafic ?? [],
     },
     vpnClient: {
-      findMany: async () => options.clients ?? [],
+      findMany: async ({ where }: any) => (options.clients ?? []).filter(row => matches(row, where)),
       groupBy: async () => options.compteurs ?? [],
     },
     reseller: {
       findMany: async () => options.revendeurs ?? [],
     },
+    user: { findMany: async () => [{ id: 'owner' }] },
   } as any;
 }
 
@@ -94,6 +105,9 @@ function client(overrides: Record<string, unknown> = {}) {
     userId: "user-1",
     deviceId: "SXBDEVICE0000001",
     resellerId: null,
+    managedById: null,
+    managedBy: null,
+    status: 'active',
     user: { name: "Client Un", email: "un@sxb.local", role: { name: "CLIENT" } },
     reseller: null,
     ...overrides,
@@ -199,6 +213,35 @@ describe("présence VPN — rapprochement sans dénominaliser la table de santé
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe("présence VPN — cloisonnement revendeur", () => {
+  it("transmet les filtres imbriqués avant rapprochement, sans réutiliser un cache global", async () => {
+    const clients = [
+      client({ id: 'a', userId: 'ua', deviceId: 'da', managedById: 'admin-a', managedBy: { role: { name: 'ADMIN' } } }),
+      client({ id: 'b', userId: 'ub', deviceId: 'db', managedById: 'admin-b', managedBy: { role: { name: 'ADMIN' } } }),
+      client({ id: 'r', userId: 'ur', deviceId: 'dr', resellerId: 'reseller', reseller: { userId: 'reseller-user', createdBy: 'admin-a' } }),
+      client({ id: 'owner-client', userId: 'uo', deviceId: 'do', managedById: 'owner', managedBy: { role: { name: 'OWNER' } } }),
+      client({ id: 'owner-reseller-client', userId: 'uor', deviceId: 'dor', resellerId: 'owner-reseller',
+        reseller: { userId: 'owner-reseller-user', createdBy: 'owner' } }),
+    ];
+    const db = baseSimulee({ clients, trafic: clients.map(row => ({ deviceId: row.deviceId, timestamp: ilYA(1) })) });
+    viderCachePresence();
+    for (const [role, userId, expected] of [
+      ['OWNER', 'owner', ['a', 'b', 'owner-client', 'owner-reseller-client', 'r']],
+      ['SUPER_ADMIN', 'superadmin', ['a', 'b', 'r']],
+      ['ADMIN', 'admin-a', ['a']],
+      ['ADMIN', 'admin-b', ['b']],
+      ['ADMIN', 'empty-admin', []],
+    ] as const) {
+      const scope = role === 'OWNER' ? null : { AND: [
+        FURTIVITE_OWNER,
+        { OR: [{ resellerId: null }, { reseller: { createdBy: { notIn: ['owner'] } } }] },
+        ...(role === 'ADMIN' ? [{ managedById: userId }] : []),
+      ] };
+      const view = await listerConnectes(db, SECRET, { porteeClients: scope, masquerProprietaire: role !== 'OWNER', now: MAINTENANT });
+      assert.deepEqual(view.lignes.map(row => row.clientId).sort(), expected, role + ':' + userId);
+      assert.equal(await compterConnectes(db, SECRET, { porteeClients: scope, masquerProprietaire: role !== 'OWNER', now: MAINTENANT }), expected.length);
+    }
+  });
+
   const clientsBase = [
     client({ id: "cli-a", userId: "user-a", deviceId: "SXBDEVA", resellerId: "res-1", reseller: { id: "res-1", user: { name: "Revendeur Un" } } }),
     client({ id: "cli-b", userId: "user-b", deviceId: "SXBDEVB", resellerId: "res-2", reseller: { id: "res-2", user: { name: "Revendeur Deux" } } }),
@@ -571,10 +614,14 @@ describe("présence VPN — le retranchement des essais ne doit pas vider le com
     assert.equal(sien, 1);
   });
 
-  it("ne refuse plus jamais en silence : la forme incomprise est tracée", () => {
-    const service = source("server/services/vpn-presence.ts");
-    assert.match(service, /Array\.isArray\(liste\.notIn\)/);
-    assert.match(service, /Array\.isArray\(liste\.in\)/);
-    assert.match(service, /console\.error\([\s\S]{0,80}condition de portée non reconnue/);
+  it("la portée est exécutée par Prisma et une erreur de requête reste explicite", async () => {
+    viderCachePresence();
+    const filter = { AND: [{ managedById: 'admin' }, { reseller: { createdBy: { notIn: ['owner'] } } }] };
+    const db = baseTrafic();
+    db.vpnClient.findMany = async ({ where }: any) => {
+      assert.deepEqual(where.AND, [filter]);
+      throw new Error('DATABASE_UNAVAILABLE');
+    };
+    await assert.rejects(listerConnectes(db, SECRET, { porteeClients: filter, now: MAINTENANT }), /DATABASE_UNAVAILABLE/);
   });
 });

@@ -27,7 +27,7 @@ import { config } from "../config";
 import { prisma } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { isOwnerRequest } from "../middleware/rbac/owner";
-import { porteeClients, porteeRevendeurs } from "../services/portee-donnees";
+import { estCloisonne, porteeClients, porteeRevendeurs } from "../services/portee-donnees";
 import {
   listerConnectes,
   listerRevendeursConnectes,
@@ -100,7 +100,7 @@ function nonMesurable(res: Response, raison: "db_unavailable" | "not_configured"
  * `total` est le nombre de lignes rapprochées AVANT pagination ; `users` en est
  * une tranche. Les deux sortent du même calcul.
  */
-router.get("/connected", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/connected", requireAuth, requirePermission("clients.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return nonMesurable(res, "db_unavailable");
     const secret = secretPseudonyme();
@@ -115,10 +115,7 @@ router.get("/connected", requireAuth, requirePermission("analytics.read"), async
       presenceWindowMinutes: presence.presenceWindowMinutes,
       heartbeatMinutes: presence.heartbeatMinutes,
       measured: true,
-      // Libellé tiré de la PORTÉE RÉELLEMENT APPLIQUÉE, et non du rôle : un
-      // administrateur est désormais cloisonné lui aussi, lui annoncer
-      // « platform » serait faux. `null` ne subsiste que pour le propriétaire.
-      scope: portee.porteeClients ? "own" : "platform",
+      scope: estCloisonne(req.user?.role) ? "own" : "platform",
       total: presence.lignes.length,
       limit,
       offset,
@@ -147,7 +144,7 @@ router.get("/connected", requireAuth, requirePermission("analytics.read"), async
  * INTERDITE AUX REVENDEURS : elle nomme les autres revendeurs et donne leurs
  * chiffres. Un revendeur passe par /connected, qui ne lui rend que son parc.
  */
-router.get("/resellers", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/resellers", requireAuth, requirePermission("clients.view"), async (req: AuthenticatedRequest, res: Response) => {
   if (req.user?.role === "RESELLER") {
     return res.status(403).json({
       error: "errors.auth.forbidden",

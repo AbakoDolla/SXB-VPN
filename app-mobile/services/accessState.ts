@@ -40,10 +40,10 @@ export function parseAuthority(value: unknown): AccessAuthority {
   if (value.deviceIssue !== null && deviceIssue?.scope !== 'device') throw new Error('ACCESS_CACHE_INVALID');
   const restrictions = value.restrictions.map(item => {
     if (!isRecord(item) || typeof item.id !== 'string' || !item.id ||
-        !['suspended', 'revoked', 'deleted'].includes(String(item.status)) ||
+        !['suspended', 'revoked', 'deleted', 'expired', 'exhausted'].includes(String(item.status)) ||
         !Array.isArray(item.hashes) || !item.hashes.every(hash => typeof hash === 'string') ||
         typeof item.name !== 'string') throw new Error('ACCESS_CACHE_INVALID');
-    return { id: item.id, status: item.status as 'suspended' | 'revoked' | 'deleted', hashes: item.hashes as string[], name: item.name };
+    return { id: item.id, status: item.status as AccessAuthority['restrictions'][number]['status'], hashes: item.hashes as string[], name: item.name };
   });
   return { userId: value.userId, deviceId: value.deviceId, session: value.session,
     sequence: Number(value.sequence), snapshot, deviceIssue, restrictions };
