@@ -631,6 +631,30 @@ try {
   const ownerEdit = await request(a, `/api/users/${targetUser.id}`, { name: 'SYNTHETIC AUTHORIZED OWNER EDIT' }, owner.token, { method: 'PATCH' });
   check('genuine owner can still PATCH another user', ownerEdit.status, 200);
   check('genuine owner mutation persists', (await prisma.user.findUniqueOrThrow({ where: { id: targetUser.id } })).name, 'SYNTHETIC AUTHORIZED OWNER EDIT');
+  const { rollout, digest } = require(path.join(root, 'scripts', 'mobile-release-rollout.cjs'));
+  const publicationKey = 'sxb.app-update.v1';
+  const originalPublication = await prisma.setting.findUnique({ where: { key: publicationKey } });
+  try {
+    const previousPublication = JSON.stringify({ versionCode: 122, active: true, targetDeviceIds: ['synthetic-device'] });
+    await prisma.setting.upsert({ where: { key: publicationKey },
+      create: { key: publicationKey, value: previousPublication }, update: { value: previousPublication } });
+    const build = { versionCode: 123, versionName: 'synthetic', apkUrl: 'https://vpnsxb.afrihall.com/download/sxbvpn-latest.apk',
+      apkSha256: 'a'.repeat(64), sizeBytes: 64 };
+    const options = { mode: 'publish-all', build, versionCode: build.versionCode, apkSha256: build.apkSha256,
+      confirmed: true, expectedPublication: digest(previousPublication) };
+    await assert.rejects(rollout(prisma, { ...options, expectedPublication: 'stale' }), /MOBILE_PUBLICATION_CHANGED/);
+    check('real PostgreSQL publication preserves concurrent-edit guard',
+      (await prisma.setting.findUniqueOrThrow({ where: { key: publicationKey } })).value, previousPublication);
+    check('real PostgreSQL publication acquires a Prisma-readable advisory lock',
+      (await rollout(prisma, options)).status, 'published');
+    const published = JSON.parse((await prisma.setting.findUniqueOrThrow({ where: { key: publicationKey } })).value);
+    check('real PostgreSQL publication removes device targeting', published.targetDeviceIds.length, 0);
+    check('real PostgreSQL publication does not force installation', published.forceUpdate, false);
+    check('real PostgreSQL publication retry remains idempotent', (await rollout(prisma, options)).status, 'already-published');
+  } finally {
+    if (originalPublication) await prisma.setting.update({ where: { key: publicationKey }, data: { value: originalPublication.value } });
+    else await prisma.setting.deleteMany({ where: { key: publicationKey } });
+  }
   console.log(`REAL_POSTGRES_SECURITY_CHECKS=${checks}`);
 } finally {
   globalThis.fetch = nativeFetch;
