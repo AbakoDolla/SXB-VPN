@@ -243,6 +243,39 @@ The probe stops at host-key verification, even on a match, and logs only
 safe result categories. It does not prove authentication or data transfer
 works. Remove the temporary secret after the run. An unreachable result from
 the VPS does not disprove operation on a particular mobile operator's network.
+On a trusted match only, the result also includes the OpenSSH SHA256 fingerprint
+of that same key; mismatches never produce a replacement pin.
+
+### Controlled activation
+
+The separate manual `ssh-relay-rollout.yml` workflow is serialized with production
+deployments and runs only on the deployed `main` revision. Unlike the audit above,
+its `enable` and `disable` modes deliberately change production and restart only
+`sxb-backend`. Supply temporary environment secret `SXB_SSH_RELAY_ROLLOUT_CONFIG`:
+base64 JSON containing `host`, `port`, `username`, `payload`, and a previously
+trusted `expectedFingerprint`. Do not put a password or private key in this
+request: the operation reads the existing encrypted canonical profile on the VPS.
+
+Run `inspect` first. It requires a unique exact SSH profile match, verifies the
+supplier key without authentication, then exercises the deployed gateway code
+on a one-shot loopback listener: pinned supplier authentication, SSH forwarding,
+a bounded public test page and both byte counters. It also checks the public TLS
+ingress rejects anonymous access. This is not a substitute for observing traffic
+from the real mobile device, and does not create a mobile session or debit a
+customer's quota.
+
+`enable` additionally requires the returned profile ID, current canonical hash
+and explicit confirmation. It repeats readiness checks, saves an encrypted-profile
+receipt under `backups/ssh-relay-rollout` with mode 0600, updates only that profile's
+verified SHA256 pin, and adds only its ID to the existing environment allowlist.
+Canonical encryption/hash/version use the application helpers. Concurrent profile
+or environment edits are rejected; health/restart failures attempt a guarded
+rollback rather than overwriting another edit. Runtime allowlist and TLS ingress
+are checked before success. `disable` removes only the selected ID and does not
+depend on the supplier being reachable; it retains the verified supplier pin.
+Delete the temporary secret after the operation. Refresh the app's access list
+and establish a new connection to replace an old direct cache with the relay
+configuration; availability on the server alone does not prove this happened.
 
 Coverage includes real loopback SSH transfers, TLS hostname rejection,
 cancellation, provider fingerprint refusal, half-closes, proof replay,

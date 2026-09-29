@@ -35,7 +35,7 @@ function matchesFingerprint(key, expected) {
 function inspectHostKey(socket, algorithm, expected, signal, Client) {
   return new Promise(resolve => {
     const client = new Client();
-    let observed = 'key_exchange_failed', completed = false;
+    let observed = 'key_exchange_failed', verifiedFingerprint, completed = false;
     const finish = () => {
       if (completed) return;
       completed = true;
@@ -43,7 +43,7 @@ function inspectHostKey(socket, algorithm, expected, signal, Client) {
       signal.removeEventListener('abort', cancelled);
       client.destroy();
       socket.destroy();
-      resolve(observed);
+      resolve({ result: observed, verifiedFingerprint });
     };
     const cancelled = () => { observed = 'timeout'; finish(); };
     const timer = setTimeout(cancelled, 12000);
@@ -57,6 +57,9 @@ function inspectHostKey(socket, algorithm, expected, signal, Client) {
         algorithms: { serverHostKey: [algorithm] },
         hostVerifier: key => {
           observed = matchesFingerprint(key, expected) ? 'matched' : 'mismatch';
+          if (observed === 'matched') {
+            verifiedFingerprint = 'SHA256:' + createHash('sha256').update(key).digest('base64').replace(/=+$/, '');
+          }
           // Stop at the host key, including on a match: never authenticate.
           return false;
         },
@@ -94,10 +97,10 @@ async function probeRelayHost(config, { open, Client }) {
       } catch (error) {
         return { status: 'transport_unavailable', reason: safeTransportError(error), attempts, credentialsSent: false };
       }
-      const result = await inspectHostKey(socket, algorithm, config.expectedFingerprint, controller.signal, Client);
+      const { result, verifiedFingerprint } = await inspectHostKey(socket, algorithm, config.expectedFingerprint, controller.signal, Client);
       attempts.push({ algorithm, result });
       if (result === 'matched') {
-        return { status: 'host_key_matched', attempts, credentialsSent: false };
+        return { status: 'host_key_matched', verifiedFingerprint, attempts, credentialsSent: false };
       }
     }
     return { status: 'host_key_unverified', attempts, credentialsSent: false };
