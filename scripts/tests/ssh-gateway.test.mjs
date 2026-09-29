@@ -199,14 +199,14 @@ test('dedicated ticket, allowlisted mobile configuration and upstream validation
   assert.throws(() => relayUpstream({ protocol: 'ssh', host: 'example.test', username: 'synthetic', password: 'synthetic' }));
 });
 
-async function parseFacade(t, write) {
+async function parseFacade(t, write, requestCount = 1) {
   const peer = net.createServer(socket => { socket.on('error', () => {}); write(socket); });
   const port = await listen(peer);
   const socket = net.connect(port, '127.0.0.1');
   socket.on('error', () => {});
   await once(socket, 'connect');
   t.after(async () => { socket.destroy(); await new Promise(resolve => peer.close(resolve)); });
-  await stripRelayHttp(socket, new AbortController().signal);
+  await stripRelayHttp(socket, new AbortController().signal, requestCount);
   return socket;
 }
 
@@ -216,6 +216,34 @@ test('HTTP chain leaves every SSH banner byte untouched', { timeout: 5000 }, asy
     'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n' +
     'SSH-2.0-fixture\r\n'));
   assert.equal(socket.read(3).toString(), 'SSH');
+});
+
+test('a framed intermediate 403 waits for the later accepted response', { timeout: 5000 }, async t => {
+  const socket = await parseFacade(t, peer => {
+    peer.write('HTTP/1.1 301 Moved\r\nContent-Length: 0\r\n\r\n' +
+      'HTTP/1.1 403 Forbidden\r\nContent-Length: 4\r\n\r\nbody');
+    const timer = setTimeout(() => peer.end('HTTP/1.1 101 Switching Protocols\r\n\r\nSSH-2.0-fixture\r\n'), 800);
+    peer.on('close', () => clearTimeout(timer));
+  }, 3);
+  assert.equal(socket.read(3).toString(), 'SSH');
+});
+
+test('an error body, a final 403 or a closing connection cannot manufacture a tunnel', { timeout: 5000 }, async t => {
+  const ok = 'HTTP/1.1 200 OK\r\n\r\n';
+  const banner = 'SSH-2.0-fixture\r\n';
+  const fake = ok + banner;
+  for (const prefix of [
+    ok + ok + 'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n' + ok,
+    'HTTP/1.1 403 Forbidden\r\n\r\n' + ok,
+    'HTTP/1.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n' + ok,
+    'HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n' + ok,
+    `HTTP/1.1 403 Forbidden\r\nContent-Length: ${fake.length}\r\n\r\n${fake}`,
+    'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n',
+  ]) await assert.rejects(parseFacade(t, peer => peer.end(prefix + banner), 3), /RELAY_HTTP_REJECTED/);
+  await assert.rejects(parseFacade(t, peer => peer.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n'), 3),
+    /RELAY_HTTP_REJECTED/);
+  await assert.rejects(parseFacade(t, peer => peer.end(
+    'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n'), 3), /RELAY_FRAMING_INVALID/);
 });
 
 test('client-first SSH is allowed after a successful HTTP facade', { timeout: 5000 }, async t => {

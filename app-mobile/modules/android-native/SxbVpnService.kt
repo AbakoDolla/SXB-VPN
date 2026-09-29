@@ -196,15 +196,18 @@ private fun readSshPayloadChain(
     timeoutMs: Int,
     onEvent: (String) -> Unit,
     stopAtWebsocketUpgrade: Boolean = false,
+    requestCount: Int = 1,
 ): String {
+    if (requestCount !in 1..16) throw java.io.IOException("HTTP_CHAIN_REQUEST_COUNT_INVALID")
     val deadline = System.nanoTime() + timeoutMs.toLong() * 1_000_000
     var totalBytes = 0
+    var pendingRejection: java.io.IOException? = null
     fun readByte(): Int {
         val remaining = (deadline - System.nanoTime()) / 1_000_000
-        if (remaining <= 0) throw SocketTimeoutException("HTTP_CHAIN_TIMEOUT")
+        if (remaining <= 0) throw pendingRejection ?: SocketTimeoutException("HTTP_CHAIN_TIMEOUT")
         socket.soTimeout = remaining.toInt().coerceAtLeast(1)
-        val value = input.read()
-        if (value < 0) throw java.io.EOFException("HTTP_CHAIN_TRUNCATED")
+        val value = try { input.read() } catch (error: SocketTimeoutException) { throw pendingRejection ?: error }
+        if (value < 0) throw pendingRejection ?: java.io.EOFException("HTTP_CHAIN_TRUNCATED")
         if (++totalBytes > 131072) throw java.io.IOException("HTTP_CHAIN_TOO_LARGE")
         return value
     }
@@ -262,6 +265,7 @@ private fun readSshPayloadChain(
     var previous = ""
     var previousCode = 0
     var count = 0
+    var answeredRequests = 0
     while (true) {
         val accepted = previousCode == 101 || previousCode in 200..299
         val first = readByte()
@@ -272,7 +276,7 @@ private fun readSshPayloadChain(
                 // Leave the SSH banner and binary key exchange untouched.
                 return ""
             }
-            throw java.io.IOException("TUNNEL_REFUSED")
+            throw pendingRejection ?: java.io.IOException("TUNNEL_REFUSED")
         }
         if (++count > 16) throw java.io.IOException("HTTP_CHAIN_TOO_MANY_RESPONSES")
         val headers = StringBuilder(line()).append("\r\n")
@@ -285,25 +289,34 @@ private fun readSshPayloadChain(
         val response = headers.toString()
         val code = Regex("^HTTP/\\d(?:\\.\\d)?\\s+(\\d{3})(?:\\s|\\r)").find(response)
             ?.groupValues?.get(1)?.toInt() ?: throw java.io.IOException("HTTP_CHAIN_INVALID")
+        if (code == 101 || code >= 200) answeredRequests++
         val location = Regex("(?im)^Location\\s*:\\s*([^\\r\\n]+)").find(response)?.groupValues?.get(1).orEmpty()
         if (listOf("nointernet", "captive", "portal").any { location.contains(it, true) }) {
             throw java.io.IOException("CAPTIVE_PORTAL")
         }
         // Only an explicitly pipelined payload reaches this parser. Never follow a redirect.
         onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=$count status=$code")
-        if (code !in 100..299 && code !in setOf(301, 302, 303, 307, 308)) {
+        val rejection = if (code !in 100..299 && code !in setOf(301, 302, 303, 307, 308)) {
             val errorCode = when (code) {
                 400 -> "HTTP_BAD_REQUEST"
                 404, 410 -> "HTTP_ENDPOINT_MISSING"
                 else -> "TUNNEL_REFUSED"
             }
-            throw java.io.IOException("$errorCode HTTP $code")
-        }
+            java.io.IOException("$errorCode HTTP $code")
+        } else null
+        // A framed 403 can answer the intermediate X request, not the final GET.
+        // Never scan an unframed error body for a fabricated HTTP/SSH boundary.
+        val intermediateRefusal = code == 403 && answeredRequests < requestCount &&
+            response.startsWith("HTTP/1.1 ") &&
+            !Regex("(?im)^Connection\\s*:[^\\r\\n]*\\bclose\\b").containsMatchIn(response) &&
+            Regex("(?im)^(Content-Length|Transfer-Encoding)\\s*:").containsMatchIn(response)
+        if (rejection != null && !intermediateRefusal) throw rejection
         val content = body(response)
         if (content.contains("<html", true) && listOf("nointernet", "captive", "portal").any { content.contains(it, true) }) {
             throw java.io.IOException("CAPTIVE_PORTAL")
         }
         if (code == 101 && stopAtWebsocketUpgrade) return response
+        pendingRejection = rejection
         previous = response
         previousCode = code
     }
@@ -609,7 +622,8 @@ private class SxbPayloadProxy(
                         if (ready) return
                         val readTimeout = transportSocket.soTimeout
                         try {
-                            readSshPayloadChain(rawIn, transportSocket, timeout.coerceIn(1000, 120000), onEvent)
+                            readSshPayloadChain(rawIn, transportSocket, timeout.coerceIn(1000, 120000), onEvent,
+                                requestCount = requests.size)
                             transportSocket.soTimeout = readTimeout
                             ready = true
                             onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_chain")
@@ -630,7 +644,7 @@ private class SxbPayloadProxy(
                 return
             }
             val response = readSshPayloadChain(rawIn, transportSocket, timeout.coerceIn(1000, 120000), onEvent,
-                stopAtWebsocketUpgrade = true)
+                stopAtWebsocketUpgrade = true, requestCount = requests.size)
             if (response.isEmpty()) {
                 inputStream = rawIn
                 outputStream = rawOut
