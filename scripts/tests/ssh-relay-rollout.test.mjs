@@ -51,7 +51,14 @@ test('rollout input contains no password and cannot broaden the transport select
 
 test('selection is unique, exact and SSH-only; corrupt canonical material fails closed', () => {
   assert.equal(rollout.selectProfile([profile], request, api).profile.id, profile.id);
-  assert.throws(() => rollout.selectProfile([profile, { ...profile, id: 'another' }], request, api), /AMBIGUOUS/);
+  assert.throws(() => rollout.selectProfile([profile, { ...profile, id: 'another' }], request, api), error => {
+    assert.equal(error.message, 'ROLLOUT_PROFILE_AMBIGUOUS');
+    assert.deepEqual(error.candidates, [
+      { profileId: profile.id, status: 'active' }, { profileId: 'another', status: 'active' },
+    ]);
+    assert.equal(JSON.stringify(error.candidates).includes(request.username), false);
+    return true;
+  });
   assert.throws(() => rollout.selectProfile([{ ...profile, protocol: 'vless' }], request, api), /NOT_FOUND/);
   assert.throws(() => rollout.selectProfile([profile], { ...request, username: 'someone-else' }, api), /NOT_FOUND/);
   assert.throws(() => rollout.selectProfile([profile], request, { ...api, verifyCanonicalHash: () => false }), /CANONICAL_INVALID/);
@@ -75,6 +82,23 @@ test('inspect proves the pinned key and real transfer without mutation; changes 
   await rollout.prepareRollout({ ...enable, mode: 'disable' }, request, {
     ...deps, verifyHost: async () => assert.fail('rollback must not depend on supplier reachability'),
   });
+});
+
+test('ambiguous selection reads only scoped counts and handles unlimited subscriptions', async () => {
+  const calls = [];
+  const candidates = [{ profileId: 'profile-one', status: 'active' }];
+  const result = await rollout.selectionMetadata(candidates, {
+    count: async query => { calls.push(query); return calls.length === 1 ? 3 : 1; },
+  });
+  assert.deepEqual(result, [{ ...candidates[0], subscriptions: 3, activeSubscriptions: 1 }]);
+  assert.deepEqual(calls[0], { where: { profileId: 'profile-one' } });
+  assert.equal(calls[1].where.profileId, 'profile-one');
+  assert.equal(calls[1].where.status, 'active');
+  assert.deepEqual(calls[1].where.OR[0], { expireAt: null });
+  assert.ok(calls[1].where.OR[1].expireAt.gt instanceof Date);
+  const fields = require('@prisma/client').Prisma.dmmf.datamodel.models
+    .find(model => model.name === 'Subscription').fields.map(field => field.name);
+  for (const field of ['profileId', 'status', 'expireAt']) assert.ok(fields.includes(field));
 });
 
 test('allowlist edits retain every unrelated key and profile and support an empty list', () => {
