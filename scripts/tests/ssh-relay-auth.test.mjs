@@ -40,9 +40,10 @@ const output = await require('esbuild').build({
 
 function fixture() {
   const module = { exports: {} };
+  const env = { ENCRYPTION_KEY: 'synthetic-canonical-key', SXB_SSH_RELAY_PROFILE_IDS: 'profile' };
   runInNewContext(output.outputFiles[0].text, {
     module, exports: module.exports, require, Buffer, URL, console, setTimeout, clearTimeout,
-    process: { env: { ENCRYPTION_KEY: 'synthetic-canonical-key', SXB_SSH_RELAY_PROFILE_IDS: 'profile' } },
+    process: { env },
   });
   const api = module.exports;
   const canonical = { protocol: 'ssh', host: 'provider.invalid', port: 22, username: 'synthetic',
@@ -55,7 +56,8 @@ function fixture() {
     session: { id: 'session', clientId: 'client', deviceId: 'device', authGeneration: 1,
       authExpiresAt: new Date(Date.now() + 86400000), authRevokedAt: null },
     subscription: { id: 'subscription', clientId: 'client', deviceId: 'device', status: 'active',
-      quotaBytes: 1000n, quotaUsed: 0n, profile: { id: 'profile', status: 'active',
+      quotaBytes: 1000n, quotaUsed: 0n, profile: { id: 'profile', status: 'active', protocol: 'ssh',
+        createdAt: '2026-01-02T00:00:00.000Z',
         canonicalConfigHash: configHash, canonicalConfig: api.encryptCanonical(JSON.stringify(canonical)) } },
     binding: { id: connectionId, ...claims, authSessionId: 'session', authGeneration: 1,
       subscriptionId: 'subscription', relayConfigHash: configHash, closedAt: null },
@@ -113,8 +115,36 @@ function fixture() {
       'x-sxb-nonce': nonce, 'x-sxb-proof': sign('sha256', Buffer.from(canonical), keys.privateKey).toString('base64'),
     } };
   }
-  return { api, state, claims, credential, request };
+  return { api, state, claims, credential, request, env };
 }
+
+test('new SSH profiles inherit the gateway policy without opting in existing SSH or other protocols', () => {
+  const f = fixture();
+  const profile = { id: 'new-profile', protocol: 'ssh', createdAt: '2026-01-02T00:00:00.000Z' };
+  assert.equal(f.api.relayProfileEnabled(profile), false);
+  f.env.SXB_SSH_RELAY_REQUIRED_FROM = profile.createdAt;
+  assert.equal(f.api.relayProfileEnabled(profile), true);
+  assert.equal(f.api.relayProfileEnabled({ ...profile, protocol: 'ssh+payload' }), true);
+  assert.equal(f.api.relayProfileEnabled({ ...profile, createdAt: '2026-01-01T23:59:59.999Z' }), false);
+  for (const protocol of ['vless', 'vmess', 'trojan', 'wireguard', 'singbox']) {
+    assert.equal(f.api.relayProfileEnabled({ ...profile, id: 'profile', protocol }), false);
+  }
+  assert.throws(() => f.api.relayProfileEnabled({ id: 'missing-date', protocol: 'ssh' }), /DATE_REQUIRED/);
+  f.env.SXB_SSH_RELAY_REQUIRED_FROM = 'invalid';
+  assert.throws(() => f.api.relayProfileEnabled(profile), /POLICY_INVALID/);
+});
+
+test('automatically protected SSH uses the same binding, renewal and accounting authority', async () => {
+  const f = fixture();
+  delete f.env.SXB_SSH_RELAY_PROFILE_IDS;
+  f.env.SXB_SSH_RELAY_REQUIRED_FROM = f.state.subscription.profile.createdAt;
+  await f.api.authorizeRelayBinding(f.api.prisma, f.credential.ticket, f.claims, 'subscription');
+  const grant = await f.api.authorizeSshRelay(f.request());
+  await grant.account(10, 20);
+  assert.equal(f.state.subscription.quotaUsed, 30n);
+  const renewed = await f.api.renewRelayTicket(f.api.prisma, f.credential.ticket, f.claims);
+  assert.deepEqual(Object.keys(renewed).sort(), ['expiresAt', 'ticket']);
+});
 
 test('relay requires device proof; a consumed nonce cannot authorize another upgrade', async () => {
   const f = fixture(), request = f.request();

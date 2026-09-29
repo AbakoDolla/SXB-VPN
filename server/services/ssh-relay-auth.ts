@@ -38,7 +38,7 @@ async function entitlement(tx: Prisma.TransactionClient, identity: RelayIdentity
       sub.deviceId !== identity.deviceId || sub.client.deviceId !== identity.deviceId ||
       deviceAccessStatus(sub.client) !== 'active' || subscriptionAccessStatus(sub) !== 'active' ||
       await refusAccesProprietaireClient(tx, sub.client) || !sub.profile ||
-      !relayProfileEnabled(sub.profile.id) || configHashForProfile(sub.profile) !== identity.configHash) {
+      !relayProfileEnabled(sub.profile) || configHashForProfile(sub.profile) !== identity.configHash) {
     throw new Error('RELAY_ACCESS_DENIED');
   }
   return sub;

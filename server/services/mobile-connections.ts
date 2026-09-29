@@ -5,6 +5,7 @@ import { consumeSessionProof, type BoundClaims } from './mobile-session-security
 import { proofFor, securityFailure } from './mobile-proof';
 import { subscriptionAccessStatus } from './access-lifecycle';
 import { authorizeRelayBinding } from './ssh-relay-auth';
+import { relayProfileEnabled } from './ssh-relay-ticket';
 
 const connectionSchema = z.object({
   action: z.enum(['connect', 'disconnect']),
@@ -20,6 +21,17 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
   const input = connectionSchema.parse(req.body);
   return prisma.$transaction(async tx => {
     await consumeSessionProof(tx, claims, proofFor(req));
+    if (input.action === 'connect' && input.subscriptionId) {
+      const subscription = await tx.subscription.findFirst({
+        where: { id: input.subscriptionId, clientId: claims.clientId },
+        include: { profile: { select: { id: true, protocol: true, status: true, createdAt: true } } },
+      });
+      if (!subscription || subscriptionAccessStatus(subscription) !== 'active' ||
+          (subscription.deviceId && subscription.deviceId !== claims.deviceId)) securityFailure('OWNERSHIP_FORBIDDEN', 403);
+      if (!input.relayTicket && relayProfileEnabled(subscription.profile)) {
+        securityFailure('RELAY_REQUIRED', 409);
+      }
+    }
     const previous = await tx.mobileConnection.findUnique({ where: { id: input.connectionId } });
     if (previous) {
       if (previous.clientId !== claims.clientId || previous.deviceId !== claims.deviceId ||
@@ -41,13 +53,6 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
     if (input.action !== 'connect') securityFailure('CONNECTION_NOT_FOUND', 404);
     const relayConfigHash = input.relayTicket
       ? await authorizeRelayBinding(tx, input.relayTicket, claims, input.subscriptionId) : null;
-    if (input.subscriptionId) {
-      const subscription = await tx.subscription.findFirst({
-        where: { id: input.subscriptionId, clientId: claims.clientId }, include: { profile: { select: { status: true } } },
-      });
-      if (!subscription || subscriptionAccessStatus(subscription) !== 'active' ||
-          (subscription.deviceId && subscription.deviceId !== claims.deviceId)) securityFailure('OWNERSHIP_FORBIDDEN', 403);
-    }
     // Explicit null denotes a manual profile. Once issued, it cannot be
     // substituted for an existing managed connection's accounting identity.
     return tx.mobileConnection.create({ data: {

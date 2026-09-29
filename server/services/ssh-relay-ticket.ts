@@ -46,9 +46,17 @@ export function verifyRelayTicket(ticket: string, secret: string, renewal = fals
   };
 }
 
-/** Roll out only profiles explicitly verified as reachable from this gateway. */
-export function relayProfileEnabled(profileId: string): boolean {
-  return (process.env.SXB_SSH_RELAY_PROFILE_IDS ?? '').split(',').map(value => value.trim()).filter(Boolean).includes(profileId);
+/** New SSH imports inherit privacy policy, never a direct fallback on a missing pin. */
+export function relayProfileEnabled(profile: { id: string; protocol: string; createdAt?: Date | string }): boolean {
+  if (!['ssh', 'ssh+payload'].includes(profile.protocol.toLowerCase())) return false;
+  if ((process.env.SXB_SSH_RELAY_PROFILE_IDS ?? '').split(',').map(value => value.trim()).includes(profile.id)) return true;
+  const requiredFrom = process.env.SXB_SSH_RELAY_REQUIRED_FROM;
+  if (!requiredFrom) return false;
+  const cutoff = Date.parse(requiredFrom);
+  if (!Number.isFinite(cutoff)) throw new Error('RELAY_POLICY_INVALID');
+  const createdAt = profile.createdAt instanceof Date ? profile.createdAt.getTime() : Date.parse(profile.createdAt || '');
+  if (!Number.isFinite(createdAt)) throw new Error('RELAY_PROFILE_DATE_REQUIRED');
+  return createdAt >= cutoff;
 }
 
 export function relayClientConfig(

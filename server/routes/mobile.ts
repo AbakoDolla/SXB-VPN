@@ -943,7 +943,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(selectedStatus === "deleted" ? 404 : 403).json(subscriptionAccessFailure(selectedStatus, sub.id));
     }
     const profile = subscriptionState === 'active' ? (sub?.profile || null) : null;
-    const privateRelay = !!profile?.id && relayProfileEnabled(profile.id);
+    const privateRelay = !!profile?.id && relayProfileEnabled(profile);
     const proto = (profile?.protocol || "ssh").toLowerCase(); // "ssh" | "ssh+payload" | "vless" …
 
     // ── Charger le payload SSH (via JOIN Prisma d'abord, puis requête séparée) ─
@@ -1517,7 +1517,7 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         dataToken:  sub.dataToken,
         createdAt:  sub.createdAt ? new Date(sub.createdAt).toISOString() : new Date().toISOString(),
         configVersion: configVersionForProfile(profile),
-        sshRelayAvailable: !!profile?.id && relayProfileEnabled(profile.id),
+        sshRelayAvailable: !!profile?.id && relayProfileEnabled(profile),
         configHash:    configHashForProfile(profile),
         /** Cet accès provient-il d'un essai gratuit déployé ? (marqueur structurel) */
         isFreeTrial:   forfaitsEssai.has(String(sub.id)),
