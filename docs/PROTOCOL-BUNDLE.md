@@ -201,6 +201,18 @@ not silently downgrade to direct connections. Retain the database column on
 rollback. Reprovisioning a direct profile is an explicit operational decision
 that exposes the provider destination again.
 
+Before authenticating to a supplier, the manual `vps-audit.yml` mode
+`ssh-relay-preflight` can test the deployed direct/plain HTTP-payload transport
+from the VPS without changing profiles. Supply a temporary production
+environment secret named `SXB_SSH_RELAY_PREFLIGHT_CONFIG`: base64-encoded JSON
+with only `host`, numeric `port`, `payload` and `expectedFingerprint`.
+The fingerprint must come from a trusted source (`SHA256:...`, or a legacy
+`MD5:xx:...` for comparison only). Passwords and usernames are rejected.
+The probe stops at host-key verification, even on a match, and logs only
+safe result categories. It does not prove authentication or data transfer
+works. Remove the temporary secret after the run. An unreachable result from
+the VPS does not disprove operation on a particular mobile operator's network.
+
 Coverage includes real loopback SSH transfers, TLS hostname rejection,
 cancellation, provider fingerprint refusal, half-closes, proof replay,
 configuration replacement and quota concurrency. The PostgreSQL integration
