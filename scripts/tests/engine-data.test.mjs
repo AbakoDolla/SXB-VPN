@@ -47,6 +47,11 @@ test('both build channels validate a synthetic graph using the real native build
     check.includes(`dependency.Version == "v${version}"`),
     `le vérificateur doit exiger sing-box v${version}`,
   );
-  assert.match(check, /strings\.HasSuffix\(outbound\.Server, "\.example\.test"\)/);
+  assert.match(check, /!syntheticEndpoint\(outbound\.Server\)/);
+  const guard = read('scripts/tests/singbox-engine-check/synthetic_endpoints.go');
+  assert.match(guard, /strings\.HasSuffix\(server, "\.example\.test"\)/);
+  for (const range of ['192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24']) assert.ok(guard.includes(range));
+  assert.match(gate, /test synthetic_endpoints\.go synthetic_endpoints_test\.go/);
+  assert.doesNotMatch(guard, /Dial|http\.|LookupHost|exec\.|\/0"/);
   assert.doesNotMatch(check, /service\.Start\(/);
 });

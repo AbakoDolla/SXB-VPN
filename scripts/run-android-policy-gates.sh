@@ -74,6 +74,7 @@ node tests/run-stability-policy.cjs
 node tests/run-ssh-compatibility.cjs
 node scripts/prepare-geosite.cjs
 node --experimental-strip-types ../scripts/tests/xray-runtime-fixture.mjs "$HARNESS/xray"
+go -C ../scripts/tests/singbox-engine-check test synthetic_endpoints.go synthetic_endpoints_test.go
 "$KOTLINC" "$HARNESS/xray/XrayRuntimeHarness.kt" modules/android-native/SxbTunnelPolicy.kt \
   modules/android-native/SxbEngineSchema.kt modules/android-native/SxbProtocolCompatibility.kt -classpath "$SXB_JSON_JAR" \
   -include-runtime -d "$HARNESS/xray/harness.jar"
