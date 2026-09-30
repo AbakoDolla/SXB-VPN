@@ -101,9 +101,9 @@ class SxbGatewaySocketFactory(
         var raw: Socket? = null
         var owned: Socket? = null
         var phase = "TCP"
+        var tlsDeadline = 0L
         try {
             trace("[SXB_TRACE] stage=SSH_GATEWAY_START timeout_ms=15000")
-            var tlsDeadline = 0L
             var compatibility = false
             var negotiated: SSLSocket? = null
             while (negotiated == null) {
@@ -186,7 +186,7 @@ class SxbGatewaySocketFactory(
             trace("[SXB_TRACE] stage=SSH_GATEWAY_FAILED phase=$phase error_type=${error.javaClass.simpleName}")
             runCatching { owned?.close() }
             runCatching { raw?.close() }
-            val code = if (phase == "TLS" && error is SocketTimeoutException) "SSH_RELAY_TLS_TIMEOUT"
+            val code = if (error is SocketTimeoutException && (phase == "TLS" || tlsDeadline != 0L)) "SSH_RELAY_TLS_TIMEOUT"
                 else "SSH_RELAY_CONNECTION_FAILED"
             throw IOException(code, error)
         }

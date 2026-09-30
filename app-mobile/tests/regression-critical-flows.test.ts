@@ -1415,9 +1415,11 @@ describe('garde-fous contre les régressions Android', () => {
     const permanent = nativeService.match(/PERMANENT_ERROR_CODES = setOf\([\s\S]*?\)/)?.[0];
     assert.ok(permanent);
     for (const code of ['CONFIG_INVALID', 'CONFIG_UNSUPPORTED', 'USAGE_CHECKPOINT_UNAVAILABLE',
-      'VPN_PERMISSION_REQUIRED', 'VPN_PERMISSION_STORAGE_FAILED', 'BACKEND_PIN_MISMATCH']) {
+      'VPN_PERMISSION_REQUIRED']) {
       assert.ok(permanent.includes(`"${code}"`), code);
     }
+    assert.ok(!permanent.includes('VPN_PERMISSION_STORAGE_FAILED'));
+    assert.ok(!permanent.includes('BACKEND_PIN_MISMATCH'));
   });
 
   it('relance le tunnel au retour du réseau sans jamais brûler de tentative à vide', () => {

@@ -6,6 +6,10 @@ import com.sxbvpn.vpnmodule.SxbDeviceProof
 import java.io.File
 import java.io.IOException
 import java.net.Socket
+import java.security.KeyStore
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManagerFactory
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -18,10 +22,14 @@ fun main(args: Array<String>) {
     val traces = mutableListOf<String>()
     val sockets = mutableListOf<Socket>()
     var handshakeEntered: CountDownLatch? = null
-    fun factory(allow: Boolean, budget: Int = 4000) = SxbGatewaySocketFactory(
+    fun factory(allow: Boolean, budget: Int = 4000, beforeDial: () -> Unit = {}) = SxbGatewaySocketFactory(
         Context(), "synthetic.gateway.ticket", "synthetic-device",
         "11111111-1111-4111-a111-111111111111",
-        protectSocket = { socket -> check(!socket.isConnected); protected = socket; sockets.add(socket); allow },
+        protectSocket = { socket ->
+            check(!socket.isConnected); protected = socket; sockets.add(socket)
+            beforeDial()
+            allow
+        },
         trace = { traces.add(it); if (it.contains("stage=SSH_GATEWAY_TLS_ATTEMPT")) handshakeEntered?.countDown() },
         configId = "synthetic-profile",
         tlsHandshakeBudgetMs = budget,
@@ -88,17 +96,28 @@ fun main(args: Array<String>) {
     check(traces.drop(before).none { it.contains("stage=SSH_GATEWAY_TLS_RETRY") })
     check(SxbDeviceProof.calls == proofBefore)
     System.setProperty("sxb.test.gateway.url", "https://localhost:${peer.getInt("gatewayPort")}/api")
-    System.setProperty("sxb.test.reject-pin", "true")
+    val standardFactory = HttpsURLConnection.getDefaultSSLSocketFactory()
+    val untrustedStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply { load(null) }
+    val managers = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply {
+        init(untrustedStore)
+    }
+    val untrustedFactory = SSLContext.getInstance("TLS").apply {
+        init(null, managers.trustManagers, null)
+    }.socketFactory
+    HttpsURLConnection.setDefaultSSLSocketFactory(untrustedFactory)
     before = traces.size
-    factory(true).use {
-        try {
-            it.createSocket("ignored.invalid", 1)
-            error("TLS accepted a rejected backend pin")
-        } catch (_: IOException) { check(protected?.isClosed == true) }
+    try {
+        factory(true).use {
+            try {
+                it.createSocket("ignored.invalid", 1)
+                error("TLS accepted an untrusted certificate")
+            } catch (_: IOException) { check(protected?.isClosed == true) }
+        }
+    } finally {
+        HttpsURLConnection.setDefaultSSLSocketFactory(standardFactory)
     }
     check(traces.drop(before).none { it.contains("stage=SSH_GATEWAY_TLS_RETRY") })
     check(SxbDeviceProof.calls == proofBefore)
-    System.clearProperty("sxb.test.reject-pin")
     factory(true).use { download(it) }
     Socket("127.0.0.1", peer.getInt("gatewayReportPort")).use {
         val headers = it.getInputStream().readBytes().toString(Charsets.UTF_8)
@@ -113,12 +132,32 @@ fun main(args: Array<String>) {
     val began = System.nanoTime()
     factory(true, 1000).use {
         try { it.createSocket("ignored.invalid", 1); error("Silent TLS endpoint accepted") }
-        catch (error: IOException) { check(error.message == "SSH_RELAY_TLS_TIMEOUT") }
+        catch (error: IOException) {
+            check(error.message == "SSH_RELAY_TLS_TIMEOUT") {
+                "Expected TLS timeout, got ${error.message}, cause=${error.cause}; events=${traces.drop(before)}"
+            }
+        }
     }
     check((System.nanoTime() - began) / 1_000_000 < 2500)
     check(sockets.size == protectedBefore + 2 && sockets.takeLast(2).all { it.isClosed })
     check(traces.drop(before).count { it.contains("stage=SSH_GATEWAY_TLS_RETRY") } == 1)
     check(SxbDeviceProof.calls == proofBefore)
+    before = traces.size
+    val delayedDialStart = sockets.size
+    factory(true, 1000, beforeDial = {
+        if (sockets.size == delayedDialStart + 2) Thread.sleep(750)
+    }).use {
+        try { it.createSocket("ignored.invalid", 1); error("Expired retry budget accepted") }
+        catch (error: IOException) {
+            check(error.message == "SSH_RELAY_TLS_TIMEOUT") {
+                "TLS retry budget expired before its TCP dial, got ${error.message}"
+            }
+        }
+    }
+    check(sockets.size == delayedDialStart + 2 && sockets.takeLast(2).all { it.isClosed })
+    check(traces.drop(before).any { it.contains("stage=SSH_GATEWAY_FAILED phase=TCP") })
+    check(SxbDeviceProof.calls == proofBefore)
+    println("PASS: TLS-budget expiry before the retry TCP dial stays TLS_TIMEOUT with both sockets closed")
     before = traces.size
     handshakeEntered = CountDownLatch(1)
     val cancelling = factory(true)
@@ -148,5 +187,5 @@ fun main(args: Array<String>) {
     check(traces.any { it.contains("stage=SSH_GATEWAY_RESPONSE status=101") })
     check(traces.any { it.contains("stage=SSH_GATEWAY_READY") })
     check(traces.none { it.contains("synthetic.gateway.ticket") || it.contains("localhost") || it.contains(peer.getString("password")) })
-    println("PASS: native TLS gateway, hostname/pin rejection, bounded compatibility, cancellation, HTTP denial and full download")
+    println("PASS: production unpinned TLS gateway, certificate/hostname rejection, bounded compatibility, cancellation, HTTP denial and full download")
 }

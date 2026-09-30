@@ -6,10 +6,8 @@ import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.security.KeyPairGenerator
-import java.security.MessageDigest
-import java.security.PublicKey
-import java.security.cert.CertificateException
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 
 private var checks = 0
 private fun verify(value: Boolean, label: String) {
@@ -48,27 +46,18 @@ fun main(args: Array<String>) {
     verify(ProofHarness.headers(context, "GET", "http://127.0.0.1:4179/custom/x", "", credential).has("X-SXB-Proof"),
         "explicit alternate local API remains signable")
 
-    fun publicPin(key: PublicKey): String = "sha256/" + java.util.Base64.getEncoder().encodeToString(
-        MessageDigest.getInstance("SHA-256").digest(key.encoded))
-    val first = ProofHarness.softwareKey.public
-    val backup = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair().public
-    val untrusted = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair().public
-    val pins = SxbTlsPinPolicy.parse(JSONArray().put(publicPin(first)).put(publicPin(backup)).toString(), true)
-    SxbTlsPinPolicy.check(pins, listOf(first))
-    SxbTlsPinPolicy.check(pins, listOf(backup))
-    verify(pins.size == 2, "current and independent backup public keys are accepted offline")
-    val mismatch = try { SxbTlsPinPolicy.check(pins, listOf(untrusted)); false }
-        catch (error: CertificateException) { error.message == "BACKEND_PIN_MISMATCH" }
-    verify(mismatch, "another otherwise trusted certificate key is refused")
-    rejects("required pin policy cannot silently become empty") { SxbTlsPinPolicy.parse("[]", true) }
-    rejects("required pin policy cannot omit its backup key") {
-        SxbTlsPinPolicy.parse(JSONArray().put(publicPin(first)).toString(), true)
+    val tlsContext = Context()
+    val http = URL(tlsContext.apiBase).openConnection() as HttpsURLConnection
+    val standardFactory = http.sslSocketFactory
+    val standardHostname = http.hostnameVerifier
+    SxbBackendTls.protect(tlsContext, http)
+    verify(http.sslSocketFactory === standardFactory && http.hostnameVerifier === standardHostname,
+        "observer retains normal platform certificate and hostname verification")
+    verify(SxbBackendTls.socketFactory(tlsContext) === standardFactory,
+        "gateway uses the same normal platform trust without an extra key allowlist")
+    rejects("observer still refuses another API origin") {
+        SxbBackendTls.protect(tlsContext, URL("https://other.invalid/api/x").openConnection() as HttpsURLConnection)
     }
-    rejects("duplicate keys are not an independent backup") {
-        SxbTlsPinPolicy.parse(JSONArray().put(publicPin(first)).put(publicPin(first)).toString(), true)
-    }
-    rejects("malformed pin metadata is never accepted") { SxbTlsPinPolicy.parse("[\"sha256/invalid\"]", true) }
-    verify(SxbTlsPinPolicy.parse("[]", false).isEmpty(), "legacy optional TLS policy retains normal platform trust")
 
     val config = """{"securitySessionId":"original","securityGeneration":7,"securityClientId":"client-a","connectionId":"connection-a","usageSessionId":"usage-a","accessAttempt":"attempt-a","password":"synthetic-sensitive","token":"synthetic-sensitive","host":"private.example.invalid"}"""
     val revoked = RevokeHarness().apply { configJson = config }
@@ -76,6 +65,7 @@ fun main(args: Array<String>) {
     verify(revoked.cancelled == 1 && revoked.interrupted == 1, "permission loss cancels workers before the main-thread queue")
     verify(revoked.gatewaySocketFactory?.closed == true && revoked.sshSession?.closed == true,
         "permission loss closes the pending gateway and SSH session synchronously")
+    verify(revoked.nativeState == "disconnected", "another VPN stops the native state before the UI queue")
     MainQueue.drain()
     verify(revoked.cancelled == 1 && revoked.cleaned == 1 && revoked.blackholeRemoved == 1, "permission loss cancels starts and invokes cleanup once")
     verify(revoked.autoReconnect.reasons == listOf("system_vpn_revoke"), "permission loss disables automatic recovery")
@@ -109,35 +99,30 @@ fun main(args: Array<String>) {
     verify(stale.cleaned == 0 && SxbSecurityMonitor.pending(stale) == "[]", "already-restored permission is not misreported as a new revoke")
 
     val permission = Context().apply { permissionGranted = true }
-    SxbVpnPermission.acknowledge(permission)
-    val attempt = JSONObject()
-    SxbVpnPermission.stamp(permission, attempt)
-    SxbVpnPermission.checkStart(permission, attempt)
-    verify(attempt.getLong("vpnPermissionGeneration") == 1L, "manual consent issues a local permission generation")
-    SxbVpnPermission.checkStart(permission, attempt)
-    verify(permission.getSharedPreferences("sxb_vpn_permission_v1", Context.MODE_PRIVATE)
-        .getLong("vpnPermissionGeneration", 0) == 1L, "radio reconnect preserves the existing permission generation")
+    val obsolete = permission.getSharedPreferences("sxb_vpn_permission_v1", Context.MODE_PRIVATE)
+    obsolete.edit().putBoolean("blocked", true).putLong("vpnPermissionGeneration", Long.MAX_VALUE).commit()
+    obsolete.failWrites = true
+    fun nextAttempt(): JSONObject = JSONObject(AccessHarness.prepareStart(permission,
+        JSONObject().put("accessSession", "synthetic-authority")))
+    val attempt = nextAttempt()
+    AccessHarness.checkStart(permission, attempt)
+    verify(!attempt.has("vpnPermissionGeneration"), "old APK185 permission block does not gate a normal start")
+    AccessHarness.checkStart(permission, attempt)
+    verify(true, "radio reconnect reuses its existing valid access attempt without a new permission grant")
     permission.permissionGranted = false
-    verify(SxbVpnPermission.revoke(permission, attempt), "system permission loss persists its block")
-    permissionRejects("revoked permission rejects an automatic retry") { SxbVpnPermission.checkStart(permission, attempt) }
-    val restored = Context().apply { preferences = permission.preferences; permissionGranted = true }
-    permissionRejects("persisted revoke blocks restart even if system consent is later restored") {
-        SxbVpnPermission.checkStart(restored, attempt)
+    permissionRejects("another VPN rejects an automatic retry via Android permission") {
+        AccessHarness.checkStart(permission, attempt)
     }
-    permissionRejects("persisted revoke cannot be cleared by stamping another automatic start") {
-        SxbVpnPermission.stamp(restored, JSONObject())
+    AccessHarness.cancelStarts(permission)
+    permission.permissionGranted = true
+    permissionRejects("cancelled attempt cannot restart when permission later becomes available") {
+        AccessHarness.checkStart(permission, attempt)
     }
-    SxbVpnPermission.acknowledge(restored)
-    val current = JSONObject()
-    SxbVpnPermission.stamp(restored, current)
-    SxbVpnPermission.checkStart(restored, current)
-    permissionRejects("an old generation stays rejected after a new explicit grant") {
-        SxbVpnPermission.checkStart(restored, attempt)
+    val current = nextAttempt()
+    AccessHarness.checkStart(permission, current)
+    permissionRejects("old attempt cannot stop or reuse the new explicit connection") {
+        AccessHarness.checkStart(permission, attempt)
     }
-    restored.permissionGranted = false
-    verify(!SxbVpnPermission.revoke(restored, attempt), "late old revoke cannot persist a block on the new generation")
-    restored.permissionGranted = true
-    SxbVpnPermission.checkStart(restored, current)
 
     val bounded = Context()
     repeat(100) { SxbSecurityMonitor.record(bounded, "VPN_OBSERVATION", config) }
@@ -147,16 +132,12 @@ fun main(args: Array<String>) {
     bounded.storage.failWrites = true
     SxbSecurityMonitor.record(bounded, "VPN_REVOKED", config)
     verify(android.util.Log.messages.contains("SECURITY_EVENT_STORAGE_FAILED"), "storage refusal is surfaced without throwing into service teardown")
-    val failing = Context().apply { permissionGranted = true }
-    SxbVpnPermission.acknowledge(failing)
-    val failingAttempt = JSONObject()
-    SxbVpnPermission.stamp(failing, failingAttempt)
-    failing.permissionGranted = false
-    failing.getSharedPreferences("sxb_vpn_permission_v1", Context.MODE_PRIVATE).failWrites = true
-    permissionRejects("permission block write failure is reported") { SxbVpnPermission.revoke(failing, failingAttempt) }
-    failing.permissionGranted = true
-    permissionRejects("a failed permission-block write fails closed in memory") {
-        SxbVpnPermission.checkStart(failing, failingAttempt)
-    }
+    val failing = RevokeHarness().apply { configJson = config; cancelFails = true }
+    failing.onRevoke()
+    verify(failing.interrupted == 1 && failing.gatewaySocketFactory?.closed == true &&
+        failing.sshSession?.closed == true && failing.nativeState == "disconnected",
+        "access-attempt storage failure cannot delay stopping another-VPN takeover")
+    verify(android.util.Log.messages.contains("ACCESS_START_CANCEL_FAILED"), "failed attempt cancellation is explicitly logged")
+    MainQueue.drain()
     println("PASS $checks synthetic JVM security lifecycle contracts (not Android/device proof)")
 }

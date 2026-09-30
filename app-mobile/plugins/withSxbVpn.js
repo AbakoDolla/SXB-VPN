@@ -14,7 +14,6 @@ const { withAndroidManifest, withDangerousMod, withAppBuildGradle, withGradlePro
 const path = require('path');
 const fs   = require('fs');
 const { execFileSync } = require('child_process');
-const { pinsForOrigin } = require('../scripts/backend-pin-policy.cjs');
 
 // ── 1. Permissions + déclaration service dans AndroidManifest.xml ─────────────
 //
@@ -106,9 +105,9 @@ function withVpnManifest(config) {
       throw new Error('SXB access control requires a fixed HTTPS API origin');
     }
     setMetadata('com.sxbvpn.api_base_url', apiBase);
-    const pins = pinsForOrigin(apiBase, process.env.EXPO_PUBLIC_BACKEND_SPKI_PINS);
-    setMetadata('com.sxbvpn.BACKEND_SPKI_PINS', JSON.stringify(pins));
-    setMetadata('com.sxbvpn.BACKEND_SPKI_REQUIRED', 'true');
+    app['meta-data'] = app['meta-data'].filter(entry => ![
+      'com.sxbvpn.BACKEND_SPKI_PINS', 'com.sxbvpn.BACKEND_SPKI_REQUIRED',
+    ].includes(entry.$?.['android:name']));
     const signers = (process.env.EXPO_PUBLIC_APK_SIGNERS ||
       '0140c97e6ba6e9bab0d0ce86935562fbdedd80a026de49642764c49dce56f726').split(',').map(value => value.trim().toLowerCase());
     if (!signers.length || signers.some(value => !/^[a-f0-9]{64}$/.test(value))) throw new Error('APK_SIGNERS_INVALID');
@@ -213,6 +212,9 @@ function withKotlinSources(config) {
     const platformRoot = cfg.modRequest.platformProjectRoot;
     const destDir = path.join(platformRoot, 'app', 'src', 'main', 'java', 'com', 'sxbvpn', 'vpnmodule');
     fs.mkdirSync(destDir, { recursive: true });
+    for (const removed of ['SxbTlsPinPolicy.kt', 'SxbVpnPermission.kt']) {
+      fs.rmSync(path.join(destDir, removed), { force: true });
+    }
 
     const srcDir = path.join(projectRoot, 'modules', 'android-native');
     if (fs.existsSync(srcDir)) {

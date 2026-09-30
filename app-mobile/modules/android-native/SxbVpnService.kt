@@ -1179,7 +1179,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
          */
         private val PERMANENT_ERROR_CODES = setOf(
             "CONFIG_INVALID", "CONFIG_UNSUPPORTED", "USAGE_CHECKPOINT_UNAVAILABLE",
-            "VPN_PERMISSION_REQUIRED", "VPN_PERMISSION_STORAGE_FAILED", "BACKEND_PIN_MISMATCH",
+            "VPN_PERMISSION_REQUIRED",
         )
 
         /**
@@ -1843,17 +1843,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
         synchronized(SxbAccessControl) {
             if (instance !== this || android.net.VpnService.prepare(this) == null ||
                 configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return
-            try {
-                val captured = if (revokedConfig.isNullOrBlank()) null else JSONObject(revokedConfig)
-                if (!SxbAccessControl.revokeVpnPermission(this, captured)) return
-            } catch (error: Exception) {
-                Log.e(TAG, "VPN_PERMISSION_STORAGE_FAILED", error)
-            }
             if (::autoReconnect.isInitialized) autoReconnect.markStopped("system_vpn_revoke")
             interruptForAccess()
             runCatching { gatewaySocketFactory?.close() }
             runCatching { sshSession?.disconnect() }
             runCatching { socks5Server?.close() }
+            setCurrentState("disconnected")
+            try {
+                SxbAccessControl.cancelStarts(this)
+            } catch (error: Exception) {
+                Log.e(TAG, "ACCESS_START_CANCEL_FAILED", error)
+            }
         }
         android.os.Handler(android.os.Looper.getMainLooper()).post {
         SxbSecurityMonitor.record(this, "VPN_REVOKED", revokedConfig)
@@ -1862,7 +1862,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return@post
         // Cancel the original attempt before workers can schedule another start.
         // Permission loss is not logout, account suspension or profile deletion.
-        broadcastLog("[SXB] ⚠️ VPN révoqué par le système")
+        broadcastLog("[SXB] ⚠️ VPN arrêté : autorisation retirée ou autre VPN activé")
         broadcastStatus("disconnected", "VPN_PERMISSION_REQUIRED")
         cleanup()
         // Le système a repris la main sur l'interface VPN : ne pas la réinstaller.
@@ -2976,8 +2976,6 @@ class SxbVpnService : VpnService(), PlatformInterface {
             lower.contains("ssh_socket_protect_failed") -> "SSH_SOCKET_PROTECT_FAILED"
             lower.contains("ssh_relay_tls_timeout") -> "TLS_TIMEOUT"
             lower.contains("vpn_permission_required") -> "VPN_PERMISSION_REQUIRED"
-            lower.contains("vpn_permission_storage_failed") -> "VPN_PERMISSION_STORAGE_FAILED"
-            lower.contains("backend_pin_mismatch") -> "BACKEND_PIN_MISMATCH"
             lower.contains("reject hostkey") || lower.contains("hostkey has been changed") ||
                 lower.contains("unknownhostkey") -> "SSH_HOST_KEY_FAILED"
             lower.contains("algorithm negotiation fail") -> "SSH_ALGORITHM_FAILED"
@@ -6146,6 +6144,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     fun stopVpn() = cleanup()
+
+    fun hasTunnelResources(): Boolean =
+        running.get() || dispatchInFlight() || boxService != null || tunPfd != null ||
+            gatewaySocketFactory != null || sshSession != null || socks5Server != null
 
     fun usageSessionId(): String? =
         if (configJson.isEmpty()) null else JSONObject(configJson).optString("usageSessionId").takeIf { it.isNotEmpty() }
