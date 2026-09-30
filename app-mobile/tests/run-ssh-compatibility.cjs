@@ -119,7 +119,7 @@ object SxbBackendTls {
 object SxbDeviceProof {
  fun headers(context: Context, method: String, url: String, body: String, credential: String): JSONObject {
   check(method == "GET" && body.isEmpty() && credential == "synthetic.gateway.ticket")
-  check(url == SxbBackendTls.base(context) + "/mobile/ssh-relay?connectionId=11111111-1111-4111-a111-111111111111")
+  check(url == SxbBackendTls.base(context) + "/mobile/ssh-relay?connectionId=11111111-1111-4111-a111-111111111111&configId=synthetic-profile")
   return JSONObject().put("X-SXB-Time", "1234567890123").put("X-SXB-Nonce", "synthetic-proof")
  }
 }

@@ -8,6 +8,7 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
+import java.net.URLEncoder
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLSocket
 
@@ -19,6 +20,7 @@ class SxbGatewaySocketFactory(
     private val connectionId: String,
     private val protectSocket: (Socket) -> Boolean,
     private val trace: (String) -> Unit = {},
+    private val configId: String? = null,
 ) : SocketFactory, java.io.Closeable {
     private var current: Socket? = null
     private var closed = false
@@ -44,7 +46,13 @@ class SxbGatewaySocketFactory(
         require(base.scheme == "https" && base.userInfo == null && base.rawQuery == null && base.rawFragment == null) {
             "RELAY_ORIGIN_INVALID"
         }
-        val endpoint = URI(base.toString().trimEnd('/') + "/mobile/ssh-relay?connectionId=$connectionId")
+        val attribution = configId?.let {
+            require(it.isNotBlank() && it.length <= 200 && it.none { character -> character.code <= 32 || character.code == 127 }) {
+                "RELAY_CONFIG_ID_INVALID"
+            }
+            "&configId=${URLEncoder.encode(it, "UTF-8")}"
+        } ?: ""
+        val endpoint = URI(base.toString().trimEnd('/') + "/mobile/ssh-relay?connectionId=$connectionId$attribution")
         val targetPort = if (base.port < 0) 443 else base.port
         val raw = Socket()
         var owned: Socket = raw

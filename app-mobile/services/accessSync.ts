@@ -505,13 +505,26 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
   return operation;
 }
 
-function currentRelayCache(stored: configStore.StoredConfig, session: string | undefined): boolean {
-  if (!session || stored.meta.relaySession !== session || !isSshRelayConfig(stored.config)) return false;
+function currentConfigRevision(stored: configStore.StoredConfig): boolean {
   const subscriptionId = stored.meta.subscriptionId || stored.meta.configId;
   const expected = getAccessState().authority?.snapshot?.subscriptions.find(entry => entry.id === subscriptionId)
     ?? connections.find(entry => entry.id === subscriptionId);
   return expected?.configHash ? stored.meta.configHash === expected.configHash
     : expected?.configVersion === undefined || stored.meta.configVersion === expected.configVersion;
+}
+
+function currentRelayCache(stored: configStore.StoredConfig, session: string | undefined): boolean {
+  return !!session && stored.meta.relaySession === session && isSshRelayConfig(stored.config) &&
+    currentConfigRevision(stored);
+}
+
+function startupRelayCredential(id: string, stored: configStore.StoredConfig): Promise<Record<string, unknown>> {
+  const relay = stored.config.sshRelay;
+  // Renewal belongs to observation. A usable credential needs no control API
+  // before the gateway can validate the device and current entitlement.
+  if (isRecord(relay) && typeof relay.expiresAt === 'string' &&
+      Date.parse(relay.expiresAt) - Date.now() > 30_000) return Promise.resolve(stored.config);
+  return refreshRelayCredential(id, stored.config);
 }
 
 /** Current relay credentials do not depend on a catalogue refresh before dialing. */
@@ -527,7 +540,9 @@ export async function prepareSshConnection(id: string, stored: configStore.Store
   if (!cached) throw new Error('ACCESS_PROFILE_MISSING');
   requireDeviceAccess();
   requireProfileAccess(cached.meta);
-  if (currentRelayCache(cached, session)) return refreshRelayCredential(id, cached.config);
+  if (currentRelayCache(cached, session)) return startupRelayCredential(id, cached);
+  if (cached.meta.sshRelayRequired === false && !cached.config.sshRelay &&
+      !connections.find(entry => entry.id === id)?.sshRelayAvailable && currentConfigRevision(cached)) return cached.config;
   try { await refreshMobileConfigs(); }
   catch (error) {
     const current = storeValue(await configStore.get(id));
@@ -553,7 +568,20 @@ export async function prepareSshConnection(id: string, stored: configStore.Store
       code: note?.code || 'RELAY_BOUND_SESSION_REQUIRED', stage: 'request', attempts: 1, retryable: note?.retryable ?? false,
     });
   }
-  return isSshRelayConfig(current.config) ? refreshRelayCredential(id, current.config) : current.config;
+  return isSshRelayConfig(current.config) ? startupRelayCredential(id, current) : current.config;
+}
+
+async function refreshCachedRelayCredentials(): Promise<void> {
+  const session = await currentRelaySession();
+  if (!session) return;
+  const profiles = storeValue(await configStore.list()) ?? [];
+  await Promise.all(profiles.filter(profile => profile.isActive && profile.sshRelayRequired).map(async profile => {
+    const stored = storeValue(await configStore.get(profile.configId));
+    if (stored && currentRelayCache(stored, session)) {
+      try { await refreshRelayCredential(profile.configId, stored.config); }
+      catch (error) { reportAccessSyncError(error); }
+    }
+  }));
 }
 
 async function refreshNativeTicket(): Promise<void> {
@@ -624,6 +652,7 @@ export function startAccessObservation(): () => void {
         delay = 30_000;
       } else {
         await refreshNativeTicket();
+        await refreshCachedRelayCredentials();
         if (getAccessState().native?.observing) delay = 30_000;
       }
       failures = 0;

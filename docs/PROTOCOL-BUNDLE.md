@@ -212,22 +212,49 @@ precedes password authentication. Private/local upstream addresses are refused.
 The gateway itself remains visible to network observers.
 
 Tickets last at most seven days, bounded by the activation session and initial
-configuration validity. Before starting a new connection, the app renews a
-near-expired ticket at `POST /api/provision/ssh-relay/refresh`; the response
+configuration validity. Background observation renews a near-expired ticket
+at `POST /api/provision/ssh-relay/refresh`; the response
 contains only `ticket` and `expiresAt`, not the provider configuration.
 Refresh requires the same valid session, device, subscription and profile hash.
 Native reconnect reuses its current ticket; it does not extend an expired
 activation session or renew an expired credential independently of JS.
 
 Managed SSH connections reuse a valid relay cache for the current device session
-and the last authoritative profile revision without waiting for the full catalogue.
+and the last authoritative profile revision without waiting for the full catalogue
+or ticket renewal when more than 30 seconds remain.
 Stale sessions and changed profiles still require reconciliation before dialing.
 Cancelling an access long poll does not wait for Android's HTTP adapter to settle;
 cancelled responses cannot replace the fresh snapshot. A relay ticket inside its
 renewal window may still be used after a network-only renewal failure if more than
 30 seconds remain; HTTP refusals, expired tickets and deleted caches never fall back.
-The server still authorizes each connection and enforces its session, quota and
-profile binding. Pre-engine network failures retain their safe diagnostic codes.
+The server still authorizes each SSH connection and enforces its session, quota
+and profile binding, but does so inside the signed TLS Upgrade itself. New native
+clients include their local `configId` in the signed URL. Admission atomically
+validates the device proof, current session, profile hash and remaining quota
+before creating the immutable `sess_<connectionId>` binding. A conflicting or
+closed binding cannot be replaced or reopened. Legacy clients with a URL containing
+only `connectionId` still need their already-registered binding.
+
+Cached non-relay configurations start from the persisted local access and quota
+state without `POST /mobile/vpn/session` as a pre-tunnel requirement. Their new
+accounting context is saved durably before calling the native engine. The reporter
+synchronizes this identity through the running tunnel using `action: sync`, including
+when no bytes have been measured yet, and before reporting each previously unacknowledged
+session. A failed synchronization retains the frozen reports for retry; it cannot
+discard traffic or change its subscription. Sync only records accounting metadata:
+it never authorizes an SSH Upgrade, extends access, reopens a closed binding or
+changes an existing association. Historical direct usage can therefore be attributed
+after a plan expires, without permitting a new tunnel on that expired plan. Missing
+protected-SSH bindings cannot be synthesized as direct ones.
+
+Pre-engine network failures retain their safe diagnostic codes. Activation, first
+import and expired-credential renewal still require their authorized service.
+Enabling cellular data is sufficient to attempt a cached connection; the actual
+VPN target (including the private SSH gateway) must nevertheless be reachable.
+No general Internet probe or Android `NET_CAPABILITY_VALIDATED` result is required.
+The public APK workflow waits for `capabilities.mobileTunnelBootstrap >= 1` in
+the deployed backend's health response before replacing the public release.
+Private branch candidates do not depend on production readiness.
 Gateway rollout and activation-session changes invalidate the local cache's
 session marker, even when the provider configuration hash is unchanged.
 Reprovisioning issues a new device-bound ticket; it never relaxes the server's

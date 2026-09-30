@@ -267,6 +267,32 @@ try {
     method: 'GET', url: upgradeUrl, socket: { remoteAddress: '127.0.0.1' },
     headers: Object.fromEntries(Object.entries(upgradeHeaders).map(([key, value]) => [key.toLowerCase(), value])),
   });
+  const bootstrapId = randomUUID();
+  const bootstrapUrl = `/api/mobile/ssh-relay?connectionId=${bootstrapId}&configId=${encodeURIComponent(sub.id)}`;
+  const bootstrapHeaders = headers(a, 'GET', bootstrapUrl, '', relayTicket);
+  const bootstrapGrant = await relay.authorizeSshRelay({
+    method: 'GET', url: bootstrapUrl, socket: { remoteAddress: '127.0.0.1' },
+    headers: Object.fromEntries(Object.entries(bootstrapHeaders).map(([key, value]) => [key.toLowerCase(), value])),
+  });
+  const bootstrapBinding = await prisma.mobileConnection.findUniqueOrThrow({ where: { id: bootstrapId } });
+  check('gateway admits a signed bootstrap without HTTPS preflight', bootstrapBinding.usageSessionId, `sess_${bootstrapId}`);
+  check('gateway bootstrap binds the authoritative managed subscription', bootstrapBinding.subscriptionId, sub.id);
+  check('gateway bootstrap binds the local profile ID', bootstrapBinding.configId, sub.id);
+  await bootstrapGrant.revalidate();
+  const bootstrapSync = { action: 'sync', connectionId: bootstrapId, sessionId: `sess_${bootstrapId}`,
+    subscriptionId: sub.id, configId: sub.id };
+  check('gateway-bound accounting sync needs no provider or relay credential',
+    (await request(a, '/api/mobile/vpn/session', bootstrapSync, a.tokens.accessToken)).status, 200);
+  await request(a, '/api/mobile/vpn/session', { ...bootstrapSync, action: 'disconnect' }, a.tokens.accessToken);
+  await assert.rejects(bootstrapGrant.revalidate());
+  const closedHeaders = headers(a, 'GET', bootstrapUrl, '', relayTicket);
+  await assert.rejects(relay.authorizeSshRelay({
+    method: 'GET', url: bootstrapUrl, socket: { remoteAddress: '127.0.0.1' },
+    headers: Object.fromEntries(Object.entries(closedHeaders).map(([key, value]) => [key.toLowerCase(), value])),
+  }));
+  check('closed bootstrap cannot reopen and rolls its nonce back', await prisma.mobileProofNonce.count({
+    where: { nonce: closedHeaders['X-SXB-Nonce'] },
+  }), 0);
   await prisma.subscription.update({ where: { id: sub.id }, data: { quotaBytes: 1000n } });
   const reservations = await Promise.allSettled([relayGrant.account(600, 0), relayGrant.account(0, 600)]);
   check('real PostgreSQL quota locks allow only one concurrent reservation',
@@ -306,6 +332,19 @@ try {
   await prisma.vpnClient.update({ where: { id: a.client.id }, data: { quotaUsed: { decrement: 600n } } });
   delete process.env.SXB_SSH_RELAY_PROFILE_IDS;
   delete process.env.SXB_SSH_RELAY_REQUIRED_FROM;
+  const directSyncId = randomUUID();
+  const directSync = { action: 'sync', connectionId: directSyncId, sessionId: `sess_${directSyncId}`,
+    subscriptionId: sub.id, configId: sub.id };
+  await prisma.subscription.update({ where: { id: sub.id }, data: { expireAt: new Date(0) } });
+  check('historical direct usage binds after expiration without granting a tunnel',
+    (await request(a, '/api/mobile/vpn/session', directSync, a.tokens.accessToken)).status, 200);
+  check('expired direct plan still cannot start a connection',
+    (await request(a, '/api/mobile/vpn/session', { ...directSync, action: 'connect' }, a.tokens.accessToken)).data.code, 'CONFIG_EXPIRED');
+  const expiredTelemetry = { bytesUp: 0, bytesDown: 0, sessionId: directSync.sessionId, seq: 0,
+    reportMode: 'delta', subscriptionId: sub.id, deviceId: a.id };
+  check('post-tunnel direct binding is usable by the real telemetry handler',
+    (await request(a, trafficTarget, expiredTelemetry, a.tokens.accessToken)).status, 200);
+  await prisma.subscription.update({ where: { id: sub.id }, data: { expireAt: null } });
   const connection = { action: 'connect', connectionId: randomUUID(), sessionId: `sess_${randomUUID()}`,
     subscriptionId: sub.id, configId: profile.id };
   check('server authorizes managed attribution', (await request(a, '/api/mobile/vpn/session', connection, a.tokens.accessToken)).status, 200);

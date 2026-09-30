@@ -156,7 +156,7 @@ const methodRefusalPayload = delayedPayloadServer(true);
       if (request.headers.authorization !== 'Bearer synthetic.gateway.ticket' ||
           request.headers['x-sxb-device-id'] !== 'synthetic-device' ||
           request.headers['x-sxb-nonce'] !== 'synthetic-proof' ||
-          request.url !== '/api/mobile/ssh-relay?connectionId=11111111-1111-4111-a111-111111111111') throw Error('invalid');
+          request.url !== '/api/mobile/ssh-relay?connectionId=11111111-1111-4111-a111-111111111111&configId=synthetic-profile') throw Error('invalid');
       return {
         clientId: 'synthetic-client', expiresAt: Date.now() + 60000,
         upstream: { host: 'upstream.invalid', port: ssh.address().port, username: 'fixture-client', password,

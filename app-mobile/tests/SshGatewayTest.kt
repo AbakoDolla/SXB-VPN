@@ -17,6 +17,7 @@ fun main(args: Array<String>) {
         "11111111-1111-4111-a111-111111111111",
         protectSocket = { socket -> check(!socket.isConnected); protected = socket; allow },
         trace = { traces.add(it) },
+        configId = "synthetic-profile",
     )
     factory(false).use {
         try { it.createSocket("ignored.invalid", 1); error("Protection failure accepted") }

@@ -31,6 +31,7 @@ type Harness = {
   events: typeof import('../services/accessEvents');
   aes: typeof import('../services/aesGcm');
   ledger: typeof import('../services/usageLedger');
+  sessions: typeof import('../services/vpnSession');
   renderBlocked(language: 'fr' | 'en', status: DeviceStatus): string;
   state: {
     storage: Map<string, string>;
@@ -122,6 +123,7 @@ async function harness(distribution = 'direct'): Promise<Harness> {
         export * as events from './services/accessEvents';
         export * as aes from './services/aesGcm';
         export * as ledger from './services/usageLedger';
+        export * as sessions from './services/vpnSession';
         export function renderBlocked(language,status) {
           const value={deviceAccess:{id:'client',status,code:'DEVICE_'+status.toUpperCase(),expireAt:null,activationRequired:false},accessNotices:[]};
           return renderToStaticMarkup(React.createElement(LanguageContext.Provider,{value:{language}},React.createElement(AuthContext.Provider,{value},React.createElement(DeviceAccessScreen))));
@@ -237,6 +239,40 @@ function installConfigVault(h: Harness) {
 }
 
 describe('native configuration vault and lossless migration', () => {
+  it('uses a near-renewal relay credential immediately without a control request', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h, null);
+    try {
+      h.state.storage.set('@sxb_session_security_v1', JSON.stringify({
+        version: 1, sessionId: 'synthetic-session', generation: 1, keyId: 'synthetic-key', clientId: 'client-not-user',
+      }));
+      const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
+        sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 60_000).toISOString() } };
+      await h.store.save('a', relay, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a',
+        sshRelayRequired: true, relaySession: await h.provision.currentRelaySession() });
+      let requests = 0;
+      h.api.default.defaults.adapter = async () => { requests++; return new Promise(() => {}); };
+      equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), relay);
+      assert.equal(requests, 0);
+    } finally { cleanup(); }
+  });
+
+  it('uses an authoritatively provisioned direct SSH cache without a catalogue preflight', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h, null);
+    try {
+      const direct = { protocol: 'ssh', host: 'provider.invalid', port: 22, username: 'synthetic', password: 'fixture-only' };
+      await h.store.save('a', direct, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a',
+        sshRelayRequired: false });
+      let requests = 0;
+      h.api.default.defaults.adapter = async () => { requests++; return new Promise(() => {}); };
+      equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), direct);
+      assert.equal(requests, 0);
+      await apply(h, snapshot('exhausted-direct', 'active', 'exhausted'));
+      await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), /CONFIG_EXHAUSTED/);
+    } finally { cleanup(); }
+  });
+
   it('opens a current relay cache without waiting for catalogue synchronization', async () => {
     const h = await harness();
     const { cleanup } = await setup(h, null);
@@ -260,6 +296,69 @@ describe('native configuration vault and lossless migration', () => {
         (error: unknown) => h.policy.accessIssueFromError(error)?.code === 'CONFIG_EXHAUSTED');
       assert.equal(requests, 0, 'a known access refusal must not start another catalogue request');
     } finally { cleanup(); }
+  });
+
+  describe('post-tunnel connection attribution', () => {
+    const context = { subscriptionId: 'a', configId: 'a', sessionId: 'sess_11111111-1111-4111-a111-111111111111' };
+    it('synchronizes metadata only, validates the receipt and keeps an identity-scoped acknowledgement', async () => {
+      const h = await harness();
+      const { cleanup } = await setup(h);
+      try {
+        h.state.storage.set('@sxb_session_security_v1', JSON.stringify({
+          version: 1, sessionId: 'synthetic-session', generation: 1, keyId: 'synthetic-key', clientId: 'client-not-user',
+        }));
+        let requests = 0;
+        h.api.default.defaults.adapter = async request => {
+          requests++;
+          assert.equal(request.url, '/mobile/vpn/session');
+          assert.equal(request.timeout, 5000);
+          const body = JSON.parse(request.data);
+          equal(body, { action: 'sync', connectionId: context.sessionId.slice(5), ...context });
+          return { status: 200, statusText: 'OK', config: request, headers: {}, data: { connection: {
+            id: body.connectionId, usageSessionId: body.sessionId, configId: body.configId,
+            subscriptionId: body.subscriptionId, clientId: 'client-not-user',
+          } } };
+        };
+        const signal = new AbortController().signal;
+        await h.sessions.ensureUsageSession(context, signal);
+        await h.sessions.ensureUsageSession(context, signal);
+        assert.equal(requests, 1);
+        await assert.rejects(h.sessions.ensureUsageSession({ ...context, subscriptionId: 'b' }, signal), /ATTRIBUTION_CONFLICT/);
+        h.events.advanceAccessSession();
+        await h.sessions.ensureUsageSession(context, signal);
+        assert.equal(requests, 2, 'another identity epoch cannot reuse the acknowledgement');
+      } finally { cleanup(); }
+    });
+
+    for (const failure of ['network', 'invalid-receipt', 'aborted', 'refused']) {
+      it(`does not acknowledge a ${failure} synchronization`, async () => {
+        const h = await harness();
+        const { cleanup } = await setup(h);
+        try {
+          h.state.storage.set('@sxb_session_security_v1', JSON.stringify({
+            version: 1, sessionId: 'synthetic-session', generation: 1, keyId: 'synthetic-key', clientId: 'client-not-user',
+          }));
+          const controller = new AbortController();
+          let requests = 0;
+          h.api.default.defaults.adapter = async request => {
+            requests++;
+            if (failure === 'network') throw new AxiosError('synthetic offline', 'ERR_NETWORK', request);
+            if (failure === 'refused') throw httpError(request, 409, { error: 'synthetic refusal' });
+            if (failure === 'aborted') controller.abort();
+            return { status: 200, statusText: 'OK', config: request, headers: {}, data: { connection: {
+              id: context.sessionId.slice(5), usageSessionId: context.sessionId, configId: context.configId,
+              subscriptionId: failure === 'invalid-receipt' ? 'b' : 'a', clientId: 'client-not-user',
+            } } };
+          };
+          await assert.rejects(h.sessions.ensureUsageSession(context, controller.signal));
+          if (failure === 'aborted') {
+            await h.sessions.ensureUsageSession(context, new AbortController().signal);
+          } else await assert.rejects(h.sessions.ensureUsageSession(context, new AbortController().signal));
+          assert.equal(requests, 2, 'a failure cannot populate the acknowledgement cache');
+          assert.equal((await h.store.get('a')).status, 'ok');
+        } finally { cleanup(); }
+      });
+    }
   });
 
   it('does not let an Android request that ignores abort block a fresh access snapshot', async () => {

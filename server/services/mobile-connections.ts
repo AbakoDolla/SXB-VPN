@@ -7,8 +7,10 @@ import { MobileAccessError, subscriptionAccessFailure, subscriptionAccessStatus 
 import { authorizeRelayBinding } from './ssh-relay-auth';
 import { relayProfileEnabled } from './ssh-relay-ticket';
 
+export const MOBILE_TUNNEL_BOOTSTRAP_VERSION = 1;
+
 const connectionSchema = z.object({
-  action: z.enum(['connect', 'disconnect']),
+  action: z.enum(['connect', 'disconnect', 'sync']),
   connectionId: z.string().uuid(),
   sessionId: z.string().regex(/^sess_[0-9a-f-]{36}$/i),
   subscriptionId: z.string().max(200).nullable(),
@@ -21,7 +23,20 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
   const input = connectionSchema.parse(req.body);
   return prisma.$transaction(async tx => {
     await consumeSessionProof(tx, claims, proofFor(req));
-    if (input.action === 'connect' && input.subscriptionId) {
+    const previous = await tx.mobileConnection.findUnique({ where: { id: input.connectionId } });
+    // A sync records accounting identity, not permission to open a tunnel.
+    // Frozen reports may outlive a disconnect or authentication rotation.
+    if (input.action === 'sync' && previous) {
+      if (previous.clientId !== claims.clientId || previous.deviceId !== claims.deviceId ||
+          previous.usageSessionId !== input.sessionId || previous.subscriptionId !== input.subscriptionId ||
+          previous.configId !== input.configId || input.relayTicket) securityFailure('USAGE_ATTRIBUTION_CONFLICT', 409);
+      return previous;
+    }
+    if (input.action === 'sync' &&
+        (input.sessionId !== `sess_${input.connectionId}` || !input.configId || input.relayTicket)) {
+      securityFailure('USAGE_ATTRIBUTION_CONFLICT', 409);
+    }
+    if ((input.action === 'connect' || input.action === 'sync') && input.subscriptionId) {
       const subscription = await tx.subscription.findFirst({
         where: { id: input.subscriptionId, clientId: claims.clientId },
         include: { profile: { select: { id: true, protocol: true, status: true, createdAt: true } } },
@@ -29,12 +44,13 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
       if (!subscription ||
           (subscription.deviceId && subscription.deviceId !== claims.deviceId)) securityFailure('OWNERSHIP_FORBIDDEN', 403);
       const status = subscriptionAccessStatus(subscription);
-      if (status !== 'active') throw new MobileAccessError(403, subscriptionAccessFailure(status, subscription.id));
+      if (input.action === 'connect' && status !== 'active') {
+        throw new MobileAccessError(403, subscriptionAccessFailure(status, subscription.id));
+      }
       if (!input.relayTicket && relayProfileEnabled(subscription.profile)) {
         securityFailure('RELAY_REQUIRED', 409);
       }
     }
-    const previous = await tx.mobileConnection.findUnique({ where: { id: input.connectionId } });
     if (previous) {
       if (previous.clientId !== claims.clientId || previous.deviceId !== claims.deviceId ||
           previous.authSessionId !== claims.sid || previous.authGeneration !== claims.sg ||
@@ -52,7 +68,7 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
       }
       return previous;
     }
-    if (input.action !== 'connect') securityFailure('CONNECTION_NOT_FOUND', 404);
+    if (input.action === 'disconnect') securityFailure('CONNECTION_NOT_FOUND', 404);
     const relayConfigHash = input.relayTicket
       ? await authorizeRelayBinding(tx, input.relayTicket, claims, input.subscriptionId) : null;
     // Explicit null denotes a manual profile. Once issued, it cannot be

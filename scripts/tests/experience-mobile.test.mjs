@@ -81,6 +81,18 @@ test('les lectures locales de la connexion sont menées ensemble', () => {
   assert.match(contexte, /const \[exhausted, expired\] = await Promise\.all\(\[isQuotaExhausted\(\), isConfigExpired\(\)\]\)/);
 });
 
+test('aucune autorisation HTTP ne bloque le démarrage du moteur Android', () => {
+  const contexte = lireSource('app-mobile/contexts/VpnContext.tsx');
+  const debut = contexte.indexOf('        const security = await sessionSecurity();');
+  const appelNatif = contexte.indexOf('        await SxbVpnNative.startVpn(optionsJson);', debut);
+  assert.ok(debut > 0 && appelNatif > debut);
+  const depart = contexte.slice(debut, appelNatif);
+  assert.doesNotMatch(depart, /apiClient\.(?:post|get|request)/);
+  assert.match(depart, /beforeConnect: true, nextSessionId: usageSessionId/);
+  assert.match(contexte, /await ensureUsageSession\(prepared\.report, request\.signal\)/);
+  assert.match(lireSource('app-mobile/services/vpnSession.ts'), /action: 'sync'/);
+});
+
 test('le journal ne peut afficher que des clés de traduction', () => {
   const journal = lireSource('app-mobile/app/journal.tsx');
   // Il ne lit QUE `stepLogs`, dont chaque entrée est une clé choisie dans le
