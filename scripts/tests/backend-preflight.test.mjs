@@ -42,10 +42,12 @@ function fixture() {
 
 test("preflight is manual, mutually exclusive, uses the exact run SHA and existing SSH protection", () => {
   assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.mode.options, ["audit", "backend-preflight", "verify-reset", "ssh-relay-preflight"]);
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.mode.options,
+    ["audit", "backend-preflight", "verify-reset", "ssh-relay-preflight", "tls-pinning-inspect"]);
   assert.equal(job.if, "inputs.mode == 'backend-preflight'");
   assert.equal(workflow.jobs.audit.if, "inputs.mode == 'audit'");
   assert.equal(workflow.jobs["verify-reset"].if, "inputs.mode == 'verify-reset'");
+  assert.equal(workflow.jobs["tls-pinning-inspect"].if, "inputs.mode == 'tls-pinning-inspect'");
   assert.equal(job.environment.name, "production");
   assert.equal(job.steps[0].with.ref, "${{ github.sha }}");
   assert.equal(job.steps[0].with["persist-credentials"], false);
