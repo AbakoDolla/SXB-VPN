@@ -114,10 +114,26 @@ import android.content.Context
 import org.json.JSONObject
 object SxbBackendTls {
  fun base(context: Context): String = System.getProperty("sxb.test.gateway.url")
- fun socketFactory(context: Context) = javax.net.ssl.SSLSocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory
+ fun socketFactory(context: Context): javax.net.ssl.SSLSocketFactory {
+  if (System.getProperty("sxb.test.reject-pin") != "true") return javax.net.ssl.SSLSocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory
+  val managers = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm())
+  managers.init(null as java.security.KeyStore?)
+  val standard = managers.trustManagers.filterIsInstance<javax.net.ssl.X509TrustManager>().single()
+  val pinned = object : javax.net.ssl.X509TrustManager {
+   override fun getAcceptedIssuers() = standard.acceptedIssuers
+   override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, auth: String) = standard.checkClientTrusted(chain, auth)
+   override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, auth: String) {
+    standard.checkServerTrusted(chain, auth)
+    throw java.security.cert.CertificateException("BACKEND_PIN_MISMATCH")
+   }
+  }
+  return javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, arrayOf(pinned), null) }.socketFactory
+ }
 }
 object SxbDeviceProof {
+ var calls = 0
  fun headers(context: Context, method: String, url: String, body: String, credential: String): JSONObject {
+  calls++
   check(method == "GET" && body.isEmpty() && credential == "synthetic.gateway.ticket")
   check(url == SxbBackendTls.base(context) + "/mobile/ssh-relay?connectionId=11111111-1111-4111-a111-111111111111&configId=synthetic-profile")
   return JSONObject().put("X-SXB-Time", "1234567890123").put("X-SXB-Nonce", "synthetic-proof")
@@ -141,12 +157,12 @@ object SxbDeviceProof {
   const deadline = Date.now() + 15000;
   while (!existsSync(peerInfo) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
   assert.ok(existsSync(peerInfo), 'Local SSH data peer did not start');
-  if (!process.argv.includes('--gateway-only')) run(process.env.JAVA || 'java', [`-Djavax.net.ssl.trustStore=${store}`,
+  if (!process.argv.includes('--gateway-only') && !process.argv.includes('--tls-fallback-only')) run(process.env.JAVA || 'java', [`-Djavax.net.ssl.trustStore=${store}`,
     '-Djavax.net.ssl.trustStorePassword=synthetic-test-only', '-cp', `${jar}${path.delimiter}${classpath}`,
     'SshCompatibilityHarnessKt', store, peerInfo]);
   run(process.env.JAVA || 'java', [`-Djavax.net.ssl.trustStore=${store}`,
     '-Djavax.net.ssl.trustStorePassword=synthetic-test-only', '-cp', `${jar}${path.delimiter}${classpath}`,
-    'SshGatewayTestKt', peerInfo]);
+    'SshGatewayTestKt', peerInfo, ...(process.argv.includes('--tls-fallback-only') ? ['tls-fallback-only'] : [])]);
 } finally {
   peer?.kill();
   rmSync(temp, { recursive: true, force: true });

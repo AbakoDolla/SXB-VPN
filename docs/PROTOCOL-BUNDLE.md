@@ -211,6 +211,16 @@ only forwarding, never shell, exec or SFTP. Supplier fingerprint verification
 precedes password authentication. Private/local upstream addresses are refused.
 The gateway itself remains visible to network observers.
 
+Gateway TLS negotiation offers TLS 1.3 and TLS 1.2 only. A silent handshake
+timeout can retry once on a fresh protected socket with TLS 1.2, still against
+the same compiled origin and with the same certificate, hostname and optional
+SPKI-pin validation. Certificate failures, HTTP refusals and cancellation do
+not authorize a compatibility retry. Both attempts, including the second TCP
+dial, share the existing 20-second TLS budget. The journal distinguishes the
+compatible retry and `TLS_TIMEOUT` from a TCP timeout. This can recover a
+version-sensitive TLS path; it does not make an operator-blocked gateway
+reachable or authorize a different hostname.
+
 Tickets last at most seven days, bounded by the activation session and initial
 configuration validity. Background observation renews a near-expired ticket
 at `POST /api/provision/ssh-relay/refresh`; the response

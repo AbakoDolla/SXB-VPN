@@ -204,6 +204,7 @@ fun main(args: Array<String>) {
     check(journal.classify("connection is closed by foreign host") == "SSH_PEER_CLOSED")
     check(journal.classify("Auth fail") == "AUTH_FAILED")
     check(journal.classify("Read timed out") == "TCP_TIMEOUT")
+    check(journal.classify(IOException("SSH_RELAY_TLS_TIMEOUT", java.net.SocketTimeoutException("Read timed out"))) == "TLS_TIMEOUT")
     check(journal.classify("SSLHandshakeException: certificate rejected") == "TLS_FAILED")
     check(journal.classify("HTTP_BAD_REQUEST") == "HTTP_BAD_REQUEST")
     check(journal.classify("something unknown") == "VPN_FAILED")
