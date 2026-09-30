@@ -142,6 +142,13 @@ const ETAPES: Record<string, Etape> = {
   SSH_GATEWAY_TLS_REQUIRED: { cle: 'tech_gateway_start', niveau: 'info', champs: {} },
   SSH_GATEWAY_START: { cle: 'tech_gateway_start', niveau: 'info', champs: { timeout_ms: duree } },
   SSH_GATEWAY_TCP: { cle: 'tech_gateway_tcp', niveau: 'ok', champs: {} },
+  SSH_GATEWAY_TLS_ATTEMPT: {
+    cle: 'tech_gateway_tls_negotiating', niveau: 'info',
+    champs: { mode: parmi('AUTO', 'TLS12'), timeout_ms: duree },
+  },
+  SSH_GATEWAY_TLS_RETRY: {
+    cle: 'tech_gateway_tls_retry', niveau: 'info', champs: { protocol: versionTls },
+  },
   SSH_GATEWAY_TLS: { cle: 'tech_gateway_tls', niveau: 'ok', champs: { protocol: versionTls } },
   SSH_GATEWAY_RESPONSE: {
     cle: 'tech_gateway_response', niveau: 'info',
@@ -312,6 +319,7 @@ const ETAPES: Record<string, Etape> = {
 const ERREURS_VPN = new Map([
   ['AUTH_FAILED', 'log_auth_failed'],
   ['TCP_TIMEOUT', 'log_timeout'],
+  ['TLS_TIMEOUT', 'log_timeout'],
   ['SSH_TIMEOUT', 'log_timeout'],
   ['SSH_BANNER_MISSING', 'log_handshake_failed'],
   ['TUNNEL_REFUSED', 'log_refused'],

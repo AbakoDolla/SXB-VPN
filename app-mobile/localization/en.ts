@@ -554,6 +554,8 @@ export const en = {
   ssh_profile_not_ready: 'Your administrator needs to verify this SSH configuration.',
   tech_gateway_start: 'Opening the private gateway…',
   tech_gateway_tcp: 'Gateway reached',
+  tech_gateway_tls_negotiating: 'Negotiating gateway TLS…',
+  tech_gateway_tls_retry: 'Retrying compatible TLS',
   tech_gateway_tls: 'Gateway encryption established',
   tech_gateway_response: 'Gateway response',
   tech_gateway_ready: 'Gateway access authorized',

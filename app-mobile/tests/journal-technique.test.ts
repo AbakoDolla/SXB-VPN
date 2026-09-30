@@ -47,7 +47,7 @@ function neDivulgueRien(rendu: string, origine: string) {
 
 describe('faits techniques — ce que le journal doit enfin montrer', () => {
   it('distingue TCP, TLS, preuve appareil et HTTP de la passerelle sans révéler son ticket', () => {
-    const stages = ['START', 'TCP', 'TLS', 'RESPONSE', 'READY', 'FAILED'];
+    const stages = ['START', 'TCP', 'TLS_ATTEMPT', 'TLS_RETRY', 'TLS', 'RESPONSE', 'READY', 'FAILED'];
     for (const stage of stages) {
       const trace = `[SXB_TRACE] stage=SSH_GATEWAY_${stage} timeout_ms=15000 protocol=TLSv1.3 status=403 phase=HTTP error_type=IOException ticket=secret.jwt host=private.example`;
       const fact = analyserTrace(trace);
@@ -67,6 +67,7 @@ describe('faits techniques — ce que le journal doit enfin montrer', () => {
       ['SSH_PEER_CLOSED', 'log_ssh_peer_closed'],
       ['AUTH_FAILED', 'log_auth_failed'],
       ['TCP_TIMEOUT', 'log_timeout'],
+      ['TLS_TIMEOUT', 'log_timeout'],
       ['PLAY_ENCRYPTION_REQUIRED', 'privacy_encryption_error'],
     ]) {
       assert.deepEqual(analyserErreurVpn(code), { cle, code });

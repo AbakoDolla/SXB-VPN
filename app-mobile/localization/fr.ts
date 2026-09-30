@@ -578,6 +578,8 @@ export const fr = {
   ssh_profile_not_ready: 'La configuration SSH doit être vérifiée par votre administrateur.',
   tech_gateway_start: 'Ouverture de la passerelle privée…',
   tech_gateway_tcp: 'Passerelle jointe',
+  tech_gateway_tls_negotiating: 'Négociation TLS de la passerelle…',
+  tech_gateway_tls_retry: 'Nouvel essai TLS compatible',
   tech_gateway_tls: 'Chiffrement de la passerelle établi',
   tech_gateway_response: 'Réponse de la passerelle',
   tech_gateway_ready: 'Accès à la passerelle autorisé',

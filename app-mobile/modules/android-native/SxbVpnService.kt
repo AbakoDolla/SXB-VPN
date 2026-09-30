@@ -2958,6 +2958,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         return when {
             lower.contains("privacy_consent_required") -> "PRIVACY_CONSENT_REQUIRED"
             lower.contains("ssh_socket_protect_failed") -> "SSH_SOCKET_PROTECT_FAILED"
+            lower.contains("ssh_relay_tls_timeout") -> "TLS_TIMEOUT"
             lower.contains("reject hostkey") || lower.contains("hostkey has been changed") ||
                 lower.contains("unknownhostkey") -> "SSH_HOST_KEY_FAILED"
             lower.contains("algorithm negotiation fail") -> "SSH_ALGORITHM_FAILED"
@@ -3015,7 +3016,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun classifyVpnError(error: Throwable): String {
-        return generateSequence(error) { it.cause }.take(4).toList().asReversed()
+        val causes = generateSequence(error) { it.cause }.take(4).toList()
+        if (causes.any { it.message == "SSH_RELAY_TLS_TIMEOUT" }) return "TLS_TIMEOUT"
+        return causes.asReversed()
             .map { classifyVpnError("${it.javaClass.simpleName}: ${it.message.orEmpty()}") }
             .firstOrNull { it != "VPN_FAILED" } ?: "VPN_FAILED"
     }

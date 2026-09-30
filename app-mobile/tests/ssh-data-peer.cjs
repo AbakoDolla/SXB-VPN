@@ -137,6 +137,54 @@ function delayedPayloadServer(refuseIntermediateMethod = false) {
 const delayedPayload = delayedPayloadServer();
 const methodRefusalPayload = delayedPayloadServer(true);
 
+function tls13Blackhole(target) {
+  return net.createServer(socket => {
+    let buffered = Buffer.alloc(0);
+    let upstream;
+    socket.on('error', () => socket.destroy());
+    socket.on('close', () => upstream?.destroy());
+    const inspect = chunk => {
+      buffered = Buffer.concat([buffered, chunk]);
+      if (buffered.length < 5) return;
+      const length = buffered.readUInt16BE(3) + 5;
+      if (buffered.length < length) return;
+      if (buffered[0] !== 22 || buffered[5] !== 1) return socket.destroy();
+      let offset = 43;
+      offset += 1 + buffered[offset];
+      offset += 2 + buffered.readUInt16BE(offset);
+      offset += 1 + buffered[offset];
+      const end = offset + 2 + buffered.readUInt16BE(offset);
+      offset += 2;
+      let modern = false;
+      while (offset + 4 <= end) {
+        const type = buffered.readUInt16BE(offset);
+        const size = buffered.readUInt16BE(offset + 2);
+        if (type === 43) {
+          for (let item = offset + 5; item + 1 < offset + 4 + size; item += 2) {
+            if (buffered.readUInt16BE(item) === 0x0304) modern = true;
+          }
+        }
+        offset += 4 + size;
+      }
+      socket.off('data', inspect);
+      if (modern) {
+        socket.resume(); // Accept TCP but provide no TLS answer to this ClientHello.
+        return;
+      }
+      socket.pause();
+      upstream = net.connect(target.address().port, '127.0.0.1');
+      upstream.on('error', () => socket.destroy());
+      upstream.once('connect', () => {
+        upstream.write(buffered);
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+        socket.resume();
+      });
+    };
+    socket.on('data', inspect);
+  });
+}
+
 (async () => {
   await listen(download); await listen(greeting); await listen(upload); await listen(uploadReport);
   await listen(ssh); await listen(payload); await listen(delayedPayload); await listen(methodRefusalPayload);
@@ -168,6 +216,20 @@ const methodRefusalPayload = delayedPayloadServer(true);
     open: async () => { const socket = net.connect(ssh.address().port, '127.0.0.1'); await once(socket, 'connect'); return socket; },
   });
   await listen(gateway);
+  const legacyTlsGateway = tls13Blackhole(gateway);
+  await listen(legacyTlsGateway);
+  const silentTlsGateway = net.createServer(socket => {
+    socket.on('error', () => socket.destroy());
+    socket.resume();
+  });
+  await listen(silentTlsGateway);
+  const refusedGateway = https.createServer({ pfx: readFileSync(process.argv[3]), passphrase: 'synthetic-test-only' });
+  refusedGateway.on('tlsClientError', () => {});
+  refusedGateway.on('upgrade', (_request, socket) => {
+    socket.on('error', () => socket.destroy());
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+  });
+  await listen(refusedGateway);
   const gatewayReport = net.createServer(socket => socket.end(gatewayHeaders));
   await listen(gatewayReport);
   writeFileSync(process.argv[2], JSON.stringify({
@@ -176,6 +238,8 @@ const methodRefusalPayload = delayedPayloadServer(true);
     downloadPort: download.address().port, greetingPort: greeting.address().port,
     uploadPort: upload.address().port, uploadReportPort: uploadReport.address().port,
     gatewayPort: gateway.address().port, gatewayReportPort: gatewayReport.address().port,
+    legacyTlsGatewayPort: legacyTlsGateway.address().port,
+    silentTlsGatewayPort: silentTlsGateway.address().port, refusedGatewayPort: refusedGateway.address().port,
     username: 'fixture-client', password, hostKey: parsedKey.getPublicSSH().toString('base64'),
   }), { mode: 0o600 });
 })().catch(error => { console.error('SSH_DATA_FIXTURE_START_FAILED', error.message); process.exitCode = 1; });
