@@ -767,6 +767,10 @@ jobs:
         id: relno
         run: echo "n=$(( ${{ github.run_number }} - 314 ))" >> "$GITHUB_OUTPUT"
 
+      - name: Verify deployed tunnel bootstrap before public release
+        if: github.ref == 'refs/heads/main'
+        run: node scripts/verify-bootstrap-backend.cjs
+
       - name: GitHub Release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3

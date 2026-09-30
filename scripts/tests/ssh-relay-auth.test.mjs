@@ -18,6 +18,8 @@ const output = await require('esbuild').build({
   stdin: { contents: `
     export * from './server/services/ssh-relay-auth';
     export * from './server/services/ssh-relay-ticket';
+    export { updateMobileConnection } from './server/services/mobile-connections';
+    export { verifyMobileProof } from './server/services/mobile-proof';
     export { encryptCanonical, computeCanonicalHash } from './server/services/canonical-config';
     export { MAINTENANCE_KEY, RESET_EXECUTION_KEY } from './server/services/reset-state';
     export { prisma } from './scripts/tests/stubs/database-stub.mjs';
@@ -60,7 +62,8 @@ function fixture() {
         createdAt: '2026-01-02T00:00:00.000Z',
         canonicalConfigHash: configHash, canonicalConfig: api.encryptCanonical(JSON.stringify(canonical)) } },
     binding: { id: connectionId, ...claims, authSessionId: 'session', authGeneration: 1,
-      subscriptionId: 'subscription', relayConfigHash: configHash, closedAt: null },
+      subscriptionId: 'subscription', configId: 'local-profile', usageSessionId: `sess_${connectionId}`,
+      relayConfigHash: configHash, closedAt: null },
     nonces: [], settings: [], traffic: { upload: 0n, download: 0n }, locks: [],
   };
   const delegates = value => ({
@@ -73,9 +76,15 @@ function fixture() {
     },
     subscription: {
       findUnique: async () => ({ ...value.subscription, client: { ...value.client, user: { status: 'active' } } }),
+      findFirst: async ({ where }) => where.id === value.subscription.id && where.clientId === value.subscription.clientId
+        ? value.subscription : null,
       update: async ({ data }) => { value.subscription.quotaUsed += data.quotaUsed.increment; return value.subscription; },
     },
-    mobileConnection: { findUnique: async () => value.binding },
+    mobileConnection: {
+      findUnique: async () => value.binding,
+      create: async ({ data }) => { value.binding = { ...data, closedAt: null }; return value.binding; },
+      update: async ({ data }) => { Object.assign(value.binding, data); return value.binding; },
+    },
     reseller: { findUnique: async () => null, findFirst: async () => null },
     mobileProofNonce: {
       createMany: async ({ data }) => {
@@ -106,8 +115,9 @@ function fixture() {
   });
   const credential = api.issueRelayTicket({ ...claims, subscriptionId: 'subscription', configHash },
     secret, Date.now() + 3600000);
-  function request() {
-    const url = `/api/mobile/ssh-relay?connectionId=${connectionId}`;
+  function request(configId) {
+    const url = `/api/mobile/ssh-relay?connectionId=${connectionId}` +
+      (configId === undefined ? '' : `&configId=${encodeURIComponent(configId)}`);
     const time = String(Date.now()), nonce = randomBytes(24).toString('base64url');
     const canonical = ['SXB-PROOF-1', 'GET', url, hash(''), 'session', '1', hash(credential.ticket), time, nonce].join('\n');
     return { method: 'GET', url, socket: { remoteAddress: '127.0.0.1' }, headers: {
@@ -115,7 +125,21 @@ function fixture() {
       'x-sxb-nonce': nonce, 'x-sxb-proof': sign('sha256', Buffer.from(canonical), keys.privateKey).toString('base64'),
     } };
   }
-  return { api, state, claims, credential, request, env };
+  function registration(body) {
+    const originalUrl = '/api/mobile/vpn/session';
+    const rawBody = Buffer.from(JSON.stringify(body));
+    const time = String(Date.now()), nonce = randomBytes(24).toString('base64url');
+    const canonical = ['SXB-PROOF-1', 'POST', originalUrl, hash(rawBody), 'session', '1',
+      hash(credential.ticket), time, nonce].join('\n');
+    const headers = {
+      'X-SXB-Time': time, 'X-SXB-Nonce': nonce,
+      'X-SXB-Proof': sign('sha256', Buffer.from(canonical), keys.privateKey).toString('base64'),
+    };
+    const req = { method: 'POST', originalUrl, body, rawBody, get: name => headers[name] };
+    api.verifyMobileProof(req, state.client.devicePublicKey, credential.ticket, claims);
+    return req;
+  }
+  return { api, state, claims, credential, request, registration, env };
 }
 
 test('new SSH profiles inherit the gateway policy without opting in existing SSH or other protocols', () => {
@@ -159,6 +183,104 @@ test('relay requires device proof; a consumed nonce cannot authorize another upg
   const missing = f.request(); delete missing.headers['x-sxb-proof'];
   await assert.rejects(f.api.authorizeSshRelay(missing));
   assert.equal(f.state.nonces.length, 1);
+});
+
+test('a signed relay upgrade creates its immutable binding without a control-plane preflight', async () => {
+  const f = fixture();
+  f.state.binding = null;
+  const request = f.request('local-profile');
+  const grant = await f.api.authorizeSshRelay(request);
+  assert.equal(f.state.binding.id, connectionId);
+  assert.equal(f.state.binding.usageSessionId, `sess_${connectionId}`);
+  assert.equal(f.state.binding.configId, 'local-profile');
+  assert.equal(f.state.binding.subscriptionId, 'subscription');
+  assert.equal(f.state.binding.relayConfigHash, f.state.subscription.profile.canonicalConfigHash);
+  assert.equal(f.state.binding.authSessionId, f.claims.sid);
+  assert.equal(f.state.binding.authGeneration, f.claims.sg);
+  await grant.account(10, 20);
+  assert.equal(f.state.subscription.quotaUsed, 30n);
+  await assert.rejects(f.api.authorizeSshRelay(request), error => error.body?.reason === 'NONCE_REUSED');
+});
+
+test('bootstrap refuses altered attribution, revoked access and an unsigned legacy upgrade', async () => {
+  const legacy = fixture();
+  legacy.state.binding = null;
+  await assert.rejects(legacy.api.authorizeSshRelay(legacy.request()), /BINDING/);
+  for (const mutate of [
+    f => { f.state.subscription.quotaUsed = f.state.subscription.quotaBytes; },
+    f => { f.state.subscription.status = 'revoked'; },
+    f => { f.state.session.authRevokedAt = new Date(); },
+    f => { f.state.client.deviceId = 'foreign-device'; },
+    f => { f.state.settings.push({ key: f.api.MAINTENANCE_KEY, value: 'true' }); },
+  ]) {
+    const f = fixture();
+    f.state.binding = null;
+    mutate(f);
+    await assert.rejects(f.api.authorizeSshRelay(f.request('local-profile')));
+    assert.equal(f.state.binding, null);
+    assert.equal(f.state.nonces.length, 0);
+  }
+  const altered = fixture(), request = altered.request('local-profile');
+  request.url = request.url.replace('local-profile', 'foreign-profile');
+  await assert.rejects(altered.api.authorizeSshRelay(request), error => error.body?.reason === 'DEVICE_PROOF_INVALID');
+  const conflict = fixture();
+  await assert.rejects(conflict.api.authorizeSshRelay(conflict.request('different-profile')), /BINDING/);
+  assert.equal(conflict.state.binding.configId, 'local-profile');
+});
+
+const synchronization = {
+  action: 'sync', connectionId, sessionId: `sess_${connectionId}`,
+  subscriptionId: 'subscription', configId: 'local-profile',
+};
+
+test('post-tunnel sync records owned direct accounting and never reopens or rewrites a binding', async () => {
+  const f = fixture();
+  f.state.subscription.profile.protocol = 'vless';
+  f.state.subscription.status = 'expired';
+  f.state.binding = null;
+  const row = await f.api.updateMobileConnection(f.registration(synchronization), f.claims);
+  assert.equal(row.subscriptionId, 'subscription');
+  assert.equal(row.relayConfigHash, null);
+  assert.equal(row.usageSessionId, `sess_${connectionId}`);
+  f.state.binding.closedAt = new Date();
+  f.state.binding.authGeneration = 0;
+  await f.api.updateMobileConnection(f.registration(synchronization), f.claims);
+  assert.notEqual(f.state.binding.closedAt, null);
+  assert.equal(f.state.binding.authGeneration, 0, 'a historical accounting sync is not a new admission');
+  const nonceCount = f.state.nonces.length;
+  for (const changed of [{ subscriptionId: null }, { configId: 'different' }, { sessionId: `sess_22222222-2222-4222-a222-222222222222` }]) {
+    await assert.rejects(f.api.updateMobileConnection(f.registration({ ...synchronization, ...changed }), f.claims),
+      error => error.body?.reason === 'USAGE_ATTRIBUTION_CONFLICT');
+  }
+  assert.equal(f.state.nonces.length, nonceCount);
+  await assert.rejects(f.api.updateMobileConnection(f.registration({ ...synchronization, action: 'connect' }), f.claims),
+    error => error.body?.code === 'CONFIG_EXPIRED');
+});
+
+test('sync keeps manual attribution explicit and cannot synthesize a protected SSH binding', async () => {
+  const f = fixture();
+  f.state.binding = null;
+  await assert.rejects(f.api.updateMobileConnection(f.registration(synchronization), f.claims),
+    error => error.body?.reason === 'RELAY_REQUIRED');
+  assert.equal(f.state.binding, null);
+  assert.equal(f.state.nonces.length, 0);
+  await f.api.authorizeSshRelay(f.request('local-profile'));
+  const authorized = await f.api.updateMobileConnection(f.registration(synchronization), f.claims);
+  assert.equal(authorized.relayConfigHash, f.state.subscription.profile.canonicalConfigHash);
+  const direct = fixture();
+  direct.state.binding = null;
+  await direct.api.updateMobileConnection(direct.registration({
+    ...synchronization, subscriptionId: null, configId: 'manual-profile',
+  }), direct.claims);
+  assert.equal(direct.state.binding.subscriptionId, null);
+  assert.equal(direct.state.binding.relayConfigHash, null);
+  const foreign = fixture();
+  foreign.state.binding = null;
+  await assert.rejects(foreign.api.updateMobileConnection(foreign.registration({
+    ...synchronization, subscriptionId: 'foreign-subscription',
+  }), foreign.claims), error => error.body?.reason === 'OWNERSHIP_FORBIDDEN');
+  assert.equal(foreign.state.binding, null);
+  assert.equal(foreign.state.nonces.length, 0);
 });
 
 test('renewal returns only a credential and retains the session, device and profile binding', async () => {

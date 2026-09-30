@@ -82,14 +82,19 @@ export async function authorizeSshRelay(req: IncomingMessage): Promise<RelayGran
   if (get('X-SXB-Device-ID') !== identity.deviceId) throw new Error('RELAY_DEVICE_MISMATCH');
   const url = new URL(req.url || '/', 'http://relay.invalid');
   const connectionId = url.searchParams.get('connectionId') || '';
-  if (!/^[0-9a-f-]{36}$/i.test(connectionId) || [...url.searchParams.keys()].join(',') !== 'connectionId') {
+  const configId = url.searchParams.get('configId');
+  const parameters = [...url.searchParams.keys()].join(',');
+  if (!/^[0-9a-f-]{36}$/i.test(connectionId) ||
+      !['connectionId', 'connectionId,configId'].includes(parameters) ||
+      (configId !== null && (!configId || configId.length > 200 || /[\u0000-\u0020\u007f]/.test(configId)))) {
     throw new Error('RELAY_CONNECTION_REQUIRED');
   }
   const binding = async (tx: Prisma.TransactionClient) => {
     const row = await tx.mobileConnection.findUnique({ where: { id: connectionId } });
     if (!row || row.closedAt || row.clientId !== identity.clientId || row.deviceId !== identity.deviceId ||
         row.authSessionId !== identity.sid || row.authGeneration !== identity.sg ||
-        row.subscriptionId !== identity.subscriptionId || row.relayConfigHash !== identity.configHash) {
+        row.subscriptionId !== identity.subscriptionId || row.relayConfigHash !== identity.configHash ||
+        (configId !== null && (row.configId !== configId || row.usageSessionId !== `sess_${connectionId}`))) {
       throw new Error('RELAY_BINDING_MISMATCH');
     }
   };
@@ -98,12 +103,21 @@ export async function authorizeSshRelay(req: IncomingMessage): Promise<RelayGran
   const proof = verifyMobileProof({
     method: req.method || '', originalUrl: req.url || '', rawBody: Buffer.alloc(0), get,
   }, bound.client.devicePublicKey, token, identity);
-  const sub = await prisma.$transaction(async tx => {
+  const upstream = await prisma.$transaction(async tx => {
     await consumeSessionProof(tx, identity, proof);
+    const sub = await entitlement(tx, identity);
+    const upstream = readRelayProfile(sub.profile);
+    if (configId !== null && !await tx.mobileConnection.findUnique({ where: { id: connectionId } })) {
+      await tx.mobileConnection.create({ data: {
+        id: connectionId, clientId: identity.clientId, deviceId: identity.deviceId,
+        authSessionId: identity.sid!, authGeneration: identity.sg!,
+        usageSessionId: `sess_${connectionId}`, subscriptionId: identity.subscriptionId,
+        configId, relayConfigHash: identity.configHash,
+      } });
+    }
     await binding(tx);
-    return entitlement(tx, identity);
+    return upstream;
   }, { maxWait: 2000, timeout: 5000 });
-  const upstream = readRelayProfile(sub.profile);
   return {
     clientId: identity.clientId, upstream, expiresAt: identity.exp * 1000,
     revalidate: async () => {

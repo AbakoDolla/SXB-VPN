@@ -9,6 +9,7 @@ import { createServer as createViteServer } from "vite";
 import { config } from "./server/config";
 import { installSshRelay } from "./server/services/ssh-relay";
 import { authorizeSshRelay } from "./server/services/ssh-relay-auth";
+import { MOBILE_TUNNEL_BOOTSTRAP_VERSION } from "./server/services/mobile-connections";
 
 // Import Routers
 import authRouter from "./server/routes/auth";
@@ -114,7 +115,8 @@ async function startServer() {
   app.use("/api", invalidateAccessAfterMutation);
   // Health check endpoint
   app.get("/api/health", (req: Request, res: Response) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString(), service: "sxb-vpn-backend" });
+    res.json({ status: "ok", timestamp: new Date().toISOString(), service: "sxb-vpn-backend",
+      capabilities: { mobileTunnelBootstrap: MOBILE_TUNNEL_BOOTSTRAP_VERSION } });
   });
 
   // 2. SaaS API Endpoints Gateway Routing

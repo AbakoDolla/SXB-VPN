@@ -409,6 +409,7 @@ export async function provisionAndStore(
     quotaUsed: Math.round(meta.quotaUsedGB * 1024 ** 3), expiryDate: meta.expireAt,
     configVersion: meta.configVersion, configHash: meta.configHash,
     relaySession: isSshRelayConfig(vpnConfig) ? relaySession : undefined,
+    sshRelayRequired: isSshRelayConfig(vpnConfig),
   });
   if (stored.status !== 'ok') {
     if (stored.error && accessIssueFromError(stored.error)) throw stored.error;

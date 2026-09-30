@@ -3323,10 +3323,14 @@ describe('comptage de la consommation data', () => {
     // L'ordre compte : la persistance PUIS l'appel réseau. L'inverse perdrait
     // le rapport si le système tuait l'application pendant l'envoi.
     const envoi = vpnContext.slice(vpnContext.indexOf('const prepared = nextReport('));
-    assert.match(envoi.slice(0, 1200), /await saveLedger\(prepared\.ledger\);[\s\S]{0,400}apiClient\.post\('\/mobile\/vpn\/traffic'/);
+    const persistance = envoi.indexOf('await saveLedger(prepared.ledger);');
+    const attribution = envoi.indexOf('await ensureUsageSession(prepared.report, request.signal);');
+    const trafic = envoi.indexOf("apiClient.post('/mobile/vpn/traffic'");
+    assert.ok(persistance >= 0 && attribution > persistance && trafic > attribution,
+      'le rapport durable précède sa liaison, puis son envoi réseau');
     // Les identifiants partent du rapport gelé, jamais d'un compteur vivant.
-    assert.match(envoi.slice(0, 1200), /sessionId: prepared\.report\.sessionId/);
-    assert.match(envoi.slice(0, 1200), /seq:\s+prepared\.report\.seq/);
+    assert.match(envoi.slice(trafic, trafic + 800), /sessionId: prepared\.report\.sessionId/);
+    assert.match(envoi.slice(trafic, trafic + 800), /seq:\s+prepared\.report\.seq/);
     // Le livre n'est purgé qu'une fois le serveur formel.
     assert.match(envoi, /settleUsage\(ledgerRef\.current, prepared\.report\)/);
     // Rejeu au démarrage : le livre est relu et vidé même sans tunnel monté,

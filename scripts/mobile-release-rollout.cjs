@@ -43,7 +43,7 @@ async function rollout(db, options) {
   const next = {
     id: current?.id || randomUUID(), versionCode: options.build.versionCode, versionName: options.build.versionName,
     apkUrl: APK_URL, apkSha256: options.build.apkSha256,
-    notes: 'Correctifs SSH multiappareils, journal de connexion et arrêt des forfaits épuisés.',
+    notes: 'Démarrage SSH/VLESS des configurations importées sur réseau restreint ; protections et contrôle des quotas conservés.',
     minSupportedCode: 0, forceUpdate: false, active: true,
     targetRoles: current?.targetRoles ?? ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
     targetDeviceIds: [], publishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),

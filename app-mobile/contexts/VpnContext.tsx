@@ -68,6 +68,7 @@ import {
 } from '@/services/mobileHealth';
 import { remonterIntegrite, flushSecurityEvents } from '@/services/securityReport';
 import { interruptibleUsageRequest, registerUsageReporter, usageDeadline, usageRetryDelay } from '@/services/usageReporting';
+import { ensureUsageSession } from '@/services/vpnSession';
 
 export { formatBytes, deriveQuota, DerivedQuota };
 
@@ -1394,7 +1395,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     else setQuotaData(prev => prev?.configId === quotaConfigId ? { ...prev, usedQuota: usedBytes, remainingQuota: Math.max(0, totalBytes - usedBytes) } : prev);
   }, []);
 
-  const flushUsage = useCallback(async (options?: { final?: boolean; beforeConnect?: boolean }) => {
+  const flushUsage = useCallback(async (options?: { final?: boolean; beforeConnect?: boolean; nextSessionId?: string }) => {
     if (!isAuthenticated || !usageMountedRef.current) return;
     const stamp = accessRequestStamp();
     if (ledgerBusyRef.current) {
@@ -1484,7 +1485,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
       ledger = { ...ledger, context };
       if (options?.beforeConnect && running) {
-        const next = { subscriptionId, configId: running.configId, attribution, sessionId };
+        const next = { subscriptionId, configId: running.configId, attribution,
+          sessionId: options.nextSessionId ?? sessionId };
         await seedQuota(next);
         ledger = { ...ledger, context: next };
       }
@@ -1493,8 +1495,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setUsageLedger(ledger);
       await saveLedger(ledger);
       if (options?.beforeConnect) return;
-      if (!pendingBytes(ledger)) return;
       if (Date.now() < usageRetryAtRef.current) return;
+      if (!pendingBytes(ledger)) {
+        if (running && vpnStateRef.current === 'connected') {
+          const request = new AbortController();
+          usageRequestAbortRef.current = request;
+          try {
+            await interruptibleUsageRequest(ensureUsageSession(context, request.signal), request.signal);
+          } finally {
+            if (usageRequestAbortRef.current === request) usageRequestAbortRef.current = null;
+          }
+        }
+        return;
+      }
 
       let exhaustedHandled = false;
       // Quelques rapports par passage suffisent : le reste attend le prochain
@@ -1513,15 +1526,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         let scopeRefused = false;
         const request = new AbortController();
         usageRequestAbortRef.current = request;
-        const result = await interruptibleUsageRequest(apiClient.post('/mobile/vpn/traffic', {
-          bytesUp:   prepared.report.bytesUp,
-          bytesDown: prepared.report.bytesDown,
-          sessionId: prepared.report.sessionId,
-          seq:       prepared.report.seq,
-          reportMode: prepared.report.attribution === 'unlinked' ? 'unlinked' : 'delta',
-          subscriptionId: prepared.report.subscriptionId || undefined,
-          deviceId: deviceId || undefined,
-        }, { signal: request.signal }), request.signal).catch((error: any) => {
+        const result = await interruptibleUsageRequest((async () => {
+          await ensureUsageSession(prepared.report, request.signal);
+          if (request.signal.aborted) throw new Error('VPN_USAGE_PREPARING');
+          return apiClient.post('/mobile/vpn/traffic', {
+            bytesUp:   prepared.report.bytesUp,
+            bytesDown: prepared.report.bytesDown,
+            sessionId: prepared.report.sessionId,
+            seq:       prepared.report.seq,
+            reportMode: prepared.report.attribution === 'unlinked' ? 'unlinked' : 'delta',
+            subscriptionId: prepared.report.subscriptionId || undefined,
+            deviceId: deviceId || undefined,
+          }, { signal: request.signal });
+        })(), request.signal).catch((error: any) => {
           if (request.signal.aborted) {
             retryNeeded = true;
             console.info('[SXB] USAGE_SYNC_PAUSED_FOR_CONNECT');
@@ -2173,22 +2190,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         if (!currentProfile) throw new Error('ACCESS_PROFILE_MISSING');
         requireProfileAccess(currentProfile.meta);
         runningProfileRef.current = currentProfile.meta;
-        // Préparation locale uniquement : un refus de stockage ou un délai
-        // dépassé interdit ce départ, sans effacer le livre ni simuler l'ancre.
-        await usageDeadline(flushUsageRef.current({ beforeConnect: true }), DELAI_PREPARATION_MS);
         const { sessionSecurity } = await import('../services/deviceSecurity');
         const security = await sessionSecurity();
         const subscriptionId = usageSubscriptionId(currentProfile.meta);
         const usageSessionId = newUsageSessionId();
         const connectionId = usageSessionId.slice('sess_'.length);
-        if (security) {
-          await apiClient.post('/mobile/vpn/session', {
-            action: 'connect', connectionId, sessionId: usageSessionId,
-            subscriptionId,
-            configId: selectedId,
-            ...(configToUse.sshRelay ? { relayTicket: configToUse.sshRelay.ticket } : {}),
-          });
-        }
+        // Persist the new attribution locally. Requiring HTTPS here prevented
+        // every protocol from providing the Internet needed by that request.
+        await usageDeadline(flushUsageRef.current({ beforeConnect: true, nextSessionId: usageSessionId }),
+          DELAI_PREPARATION_MS);
+        if (attemptId !== connectionAttemptRef.current || !currentIdentityRequest(identityStamp)) return;
         sessionIdRef.current = usageSessionId;
         // ── Ce que le réseau va voir ──────────────────────────────────────
         //
