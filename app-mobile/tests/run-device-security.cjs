@@ -179,7 +179,7 @@ class RevokeHarness : android.net.VpnService() {
   var blackholeRemoved = 0
   var interrupted = 0
   var nativeState = "connected"
-  var gatewaySocketFactory: CloseableHarness? = CloseableHarness()
+  var sshTransportSocket: java.net.Socket? = java.net.Socket()
   var sshSession: CloseableHarness? = CloseableHarness()
   var socks5Server: CloseableHarness? = CloseableHarness()
   val statuses = mutableListOf<String>()

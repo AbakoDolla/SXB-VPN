@@ -212,7 +212,7 @@ function withKotlinSources(config) {
     const platformRoot = cfg.modRequest.platformProjectRoot;
     const destDir = path.join(platformRoot, 'app', 'src', 'main', 'java', 'com', 'sxbvpn', 'vpnmodule');
     fs.mkdirSync(destDir, { recursive: true });
-    for (const removed of ['SxbTlsPinPolicy.kt', 'SxbVpnPermission.kt']) {
+    for (const removed of ['SxbTlsPinPolicy.kt', 'SxbVpnPermission.kt', 'SxbGatewaySocketFactory.kt']) {
       fs.rmSync(path.join(destDir, removed), { force: true });
     }
 

@@ -54,6 +54,7 @@ export interface VpnConfigResponse {
 // ── VPN Connections (GET /api/mobile/connections) ─────────────────────────────
 export interface VpnConnection {
   sshRelayAvailable?: boolean;
+  sshDirectAvailable?: boolean;
   id: string;
   name: string;
   displayProtocol: string;    // Nom commercial : "MTN Protocol", "Orange Protocol"

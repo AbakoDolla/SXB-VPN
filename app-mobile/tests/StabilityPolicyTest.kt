@@ -228,7 +228,7 @@ private class ReconnectSim(var connected: Boolean = true) {
 }
 
 fun main() {
-    checkCase("TLS-required SSH never selects a plaintext fallback, including old cached modes") {
+    checkCase("SSH uses only the declared TLS mode, including old cached modes") {
         for (prefix in listOf("", "[split]", "[instant_split]", "[delay_split]")) {
             val payload = "${prefix}CONNECT [host_port] HTTP/1.1[crlf]Host: [host][crlf][crlf]"
             val secured = SshTransportHarness.strategies(payload, true)
@@ -237,7 +237,8 @@ fun main() {
             check(secured.none { it.first == "ws" || it.first == "raw" })
             val explicitPlaintext = SshTransportHarness.strategies(payload, false)
             check(explicitPlaintext.first() == ("raw" to false))
-            check(explicitPlaintext.map { it.first } == listOf("raw", "tls_raw", "tls_ws", "ws"))
+            check(explicitPlaintext.map { it.first } == listOf("raw", "ws"))
+            check(explicitPlaintext.none { it.second })
         }
         val get = "GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]"
         check(SshTransportHarness.strategies(get, true) == listOf("tls_raw" to true))

@@ -257,16 +257,15 @@ test('post-tunnel sync records owned direct accounting and never reopens or rewr
     error => error.body?.code === 'CONFIG_EXPIRED');
 });
 
-test('sync keeps manual attribution explicit and cannot synthesize a protected SSH binding', async () => {
+test('direct SSH accounting works with historical gateway policy without becoming a relay binding', async () => {
   const f = fixture();
   f.state.binding = null;
-  await assert.rejects(f.api.updateMobileConnection(f.registration(synchronization), f.claims),
-    error => error.body?.reason === 'RELAY_REQUIRED');
-  assert.equal(f.state.binding, null);
-  assert.equal(f.state.nonces.length, 0);
-  await f.api.authorizeSshRelay(f.request('local-profile'));
+  await f.api.updateMobileConnection(f.registration(synchronization), f.claims);
+  assert.equal(f.state.binding.relayConfigHash, null);
+  assert.equal(f.state.nonces.length, 1);
+  await assert.rejects(f.api.authorizeSshRelay(f.request('local-profile')), /BINDING_MISMATCH/);
   const authorized = await f.api.updateMobileConnection(f.registration(synchronization), f.claims);
-  assert.equal(authorized.relayConfigHash, f.state.subscription.profile.canonicalConfigHash);
+  assert.equal(authorized.relayConfigHash, null);
   const direct = fixture();
   direct.state.binding = null;
   await direct.api.updateMobileConnection(direct.registration({

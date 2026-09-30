@@ -7,9 +7,6 @@ import javax.net.ssl.HttpsURLConnection
 
 /** Use normal platform TLS trust, without an additional public-key allowlist. */
 object SxbBackendTls {
-    fun socketFactory(context: Context): javax.net.ssl.SSLSocketFactory =
-        (java.net.URL(base(context)).openConnection() as HttpsURLConnection).sslSocketFactory
-
     private fun metadata(context: Context) = context.packageManager.getApplicationInfo(
         context.packageName, PackageManager.GET_META_DATA).metaData
     fun base(context: Context): String = metadata(context)?.getString("com.sxbvpn.api_base_url")

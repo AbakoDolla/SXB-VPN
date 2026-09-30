@@ -575,6 +575,7 @@ export const fr = {
   step_quota_ok: 'Quota suffisant',
   step_quota_pending: 'Solde local à confirmer par le serveur',
   ssh_update_required: 'Mettez l’application à jour pour utiliser cette passerelle SSH.',
+  ssh_direct_sync_required: 'Actualisez une fois les configurations avec un accès au serveur pour récupérer les identifiants SSH directs. Les connexions suivantes utiliseront le profil local.',
   ssh_activation_required: 'Réactivez votre compte sur cet appareil. Si une autorisation est demandée, contactez votre administrateur.',
   ssh_profile_not_ready: 'La configuration SSH doit être vérifiée par votre administrateur.',
   tech_gateway_start: 'Ouverture de la passerelle privée…',

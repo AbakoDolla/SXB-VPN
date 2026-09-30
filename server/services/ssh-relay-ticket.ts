@@ -46,7 +46,7 @@ export function verifyRelayTicket(ticket: string, secret: string, renewal = fals
   };
 }
 
-/** New SSH imports inherit privacy policy, never a direct fallback on a missing pin. */
+/** Historical tickets only: new provisioning always delivers the original direct profile. */
 export function relayProfileEnabled(profile: { id: string; protocol: string; createdAt?: Date | string }): boolean {
   if (!['ssh', 'ssh+payload'].includes(profile.protocol.toLowerCase())) return false;
   if ((process.env.SXB_SSH_RELAY_PROFILE_IDS ?? '').split(',').map(value => value.trim()).includes(profile.id)) return true;

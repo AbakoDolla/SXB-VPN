@@ -5,9 +5,9 @@ import { consumeSessionProof, type BoundClaims } from './mobile-session-security
 import { proofFor, securityFailure } from './mobile-proof';
 import { MobileAccessError, subscriptionAccessFailure, subscriptionAccessStatus } from './access-lifecycle';
 import { authorizeRelayBinding } from './ssh-relay-auth';
-import { relayProfileEnabled } from './ssh-relay-ticket';
 
 export const MOBILE_TUNNEL_BOOTSTRAP_VERSION = 1;
+export const MOBILE_DIRECT_SSH_VERSION = 1;
 
 const connectionSchema = z.object({
   action: z.enum(['connect', 'disconnect', 'sync']),
@@ -46,9 +46,6 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
       const status = subscriptionAccessStatus(subscription);
       if (input.action === 'connect' && status !== 'active') {
         throw new MobileAccessError(403, subscriptionAccessFailure(status, subscription.id));
-      }
-      if (!input.relayTicket && relayProfileEnabled(subscription.profile)) {
-        securityFailure('RELAY_REQUIRED', 409);
       }
     }
     if (previous) {

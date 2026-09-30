@@ -967,7 +967,7 @@ describe('garde-fous contre les régressions Android', () => {
   it('retire les profils révoqués et provisionne indépendamment le second profil', () => {
     assert.match(accessSync, /configStore\.remove\(entry\.configId\)/);
     assert.match(accessSync, /await reconcileAccess\(\)/);
-    assert.match(accessSync, /provisionAndStore\(entry\.dataToken, current\.deviceId, entry\.id\)/);
+    assert.match(accessSync, /provisionAndStore\(entry\.dataToken, current\.deviceId, entry\.id,\s*directUpgrade \? stored : undefined\)/);
     assert.match(vpnContext, /provisionAndStore\(remoteTarget\.dataToken, deviceId, configId\)/);
     assert.match(vpnContext, /pendingAutoConnectRef/);
   });
@@ -1313,7 +1313,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('throw e'));
   });
 
-  it('T-E1 ordonne la ladder raw, TLS raw, TLS WS puis WS plaintext', () => {
+  it('T-E1 respecte le TLS déclaré : aucune couche ajoutée au SSH simple', () => {
     const raw = nativeService.indexOf('SxbTransportStrategy("raw"');
     const tlsRaw = nativeService.indexOf('SshTransportStrategy("tls_raw"');
     const tlsWs = nativeService.indexOf('SshTransportStrategy("tls_ws"');
@@ -1322,7 +1322,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(raw < tlsRaw || raw < 0, 'raw doit rester le premier mode quand TLS est désactivé');
     assert.ok(tlsRaw < tlsWs && tlsWs < ws, 'ordre de la ladder incorrect');
     assert.ok(nativeService.includes('candidate.connect(timeoutMs)'));
-    assert.match(nativeService, /\.filter \{ !tlsEnabled \|\| it\.tls \}/);
+    assert.match(nativeService, /\.filter \{ it\.tls == tlsEnabled \}/);
     assert.match(nativeService, /if \(isAuthFailure\(attemptError\) \|\| isTlsIdentityFailure\(attemptError\)\) throw attemptError/);
   });
 
@@ -1747,7 +1747,7 @@ describe('garde-fous contre les régressions Android', () => {
     // Le filtre s'applique AVANT la boucle de provisionnement proactif.
     assert.ok(accessSync.includes('configStore.listDismissed()'));
     assert.ok(accessSync.includes('dismissed.has(entry.id)'));
-    assert.ok(accessSync.indexOf('const dismissed') < accessSync.indexOf('provisionAndStore(entry.dataToken, current.deviceId, entry.id)'));
+    assert.ok(accessSync.indexOf('const dismissed') < accessSync.indexOf('provisionAndStore(entry.dataToken, current.deviceId, entry.id,'));
 
     // La suppression pose la pierre tombale et purge la liste distante en mémoire.
     assert.ok(vpnContext.includes('configStore.dismiss(configId)'));

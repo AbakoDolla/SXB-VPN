@@ -53,8 +53,6 @@ fun main(args: Array<String>) {
     SxbBackendTls.protect(tlsContext, http)
     verify(http.sslSocketFactory === standardFactory && http.hostnameVerifier === standardHostname,
         "observer retains normal platform certificate and hostname verification")
-    verify(SxbBackendTls.socketFactory(tlsContext) === standardFactory,
-        "gateway uses the same normal platform trust without an extra key allowlist")
     rejects("observer still refuses another API origin") {
         SxbBackendTls.protect(tlsContext, URL("https://other.invalid/api/x").openConnection() as HttpsURLConnection)
     }
@@ -63,8 +61,8 @@ fun main(args: Array<String>) {
     val revoked = RevokeHarness().apply { configJson = config }
     revoked.onRevoke()
     verify(revoked.cancelled == 1 && revoked.interrupted == 1, "permission loss cancels workers before the main-thread queue")
-    verify(revoked.gatewaySocketFactory?.closed == true && revoked.sshSession?.closed == true,
-        "permission loss closes the pending gateway and SSH session synchronously")
+    verify(revoked.sshTransportSocket?.isClosed == true && revoked.sshSession?.closed == true,
+        "permission loss closes the direct SSH transport and session synchronously")
     verify(revoked.nativeState == "disconnected", "another VPN stops the native state before the UI queue")
     MainQueue.drain()
     verify(revoked.cancelled == 1 && revoked.cleaned == 1 && revoked.blackholeRemoved == 1, "permission loss cancels starts and invokes cleanup once")
@@ -134,10 +132,23 @@ fun main(args: Array<String>) {
     verify(android.util.Log.messages.contains("SECURITY_EVENT_STORAGE_FAILED"), "storage refusal is surfaced without throwing into service teardown")
     val failing = RevokeHarness().apply { configJson = config; cancelFails = true }
     failing.onRevoke()
-    verify(failing.interrupted == 1 && failing.gatewaySocketFactory?.closed == true &&
+    verify(failing.interrupted == 1 && failing.sshTransportSocket?.isClosed == true &&
         failing.sshSession?.closed == true && failing.nativeState == "disconnected",
         "access-attempt storage failure cannot delay stopping another-VPN takeover")
     verify(android.util.Log.messages.contains("ACCESS_START_CANCEL_FAILED"), "failed attempt cancellation is explicitly logged")
     MainQueue.drain()
+    java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1")).use { listener ->
+        val direct = RevokeHarness().apply {
+            configJson = config
+            sshTransportSocket = java.net.Socket("127.0.0.1", listener.localPort)
+        }
+        listener.accept().use { peer ->
+            peer.soTimeout = 1000
+            direct.onRevoke()
+            verify(peer.getInputStream().read() == -1 && direct.nativeState == "disconnected",
+                "another VPN closes a real direct TCP peer without waiting for the UI queue")
+            MainQueue.drain()
+        }
+    }
     println("PASS $checks synthetic JVM security lifecycle contracts (not Android/device proof)")
 }

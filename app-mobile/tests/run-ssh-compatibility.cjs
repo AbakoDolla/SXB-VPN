@@ -106,44 +106,8 @@ object Base64 {
 }
 `);
   const jar = path.join(temp, 'ssh-compat.jar');
-  const androidContext = path.join(temp, 'Context.kt');
-  writeFileSync(androidContext, `package android.content
-open class Context {
- val packageName = "synthetic.sxb"
- val packageManager = android.content.pm.PackageManager()
-}
-`);
-  const androidPackageManager = path.join(temp, 'PackageManager.kt');
-  writeFileSync(androidPackageManager, `package android.content.pm
-class Metadata {
- fun getString(name: String): String? =
-  if (name == "com.sxbvpn.api_base_url") System.getProperty("sxb.test.gateway.url") else null
-}
-class ApplicationInfo { val metaData = Metadata() }
-class PackageManager {
- companion object { const val GET_META_DATA = 128 }
- fun getApplicationInfo(name: String, flags: Int) = ApplicationInfo()
-}
-`);
-  const gatewayDependencies = path.join(temp, 'GatewayDependencies.kt');
-  writeFileSync(gatewayDependencies, `package com.sxbvpn.vpnmodule
-import android.content.Context
-import org.json.JSONObject
-object SxbDeviceProof {
- var calls = 0
- fun headers(context: Context, method: String, url: String, body: String, credential: String): JSONObject {
-  calls++
-  check(method == "GET" && body.isEmpty() && credential == "synthetic.gateway.ticket")
-  check(url == SxbBackendTls.base(context) + "/mobile/ssh-relay?connectionId=11111111-1111-4111-a111-111111111111&configId=synthetic-profile")
-  return JSONObject().put("X-SXB-Time", "1234567890123").put("X-SXB-Nonce", "synthetic-proof")
- }
-}
-`);
   const classpath = `${jsonJar}${path.delimiter}${jschJar}`;
-  run(process.env.KOTLINC || 'kotlinc', [harness, base64, androidContext, androidPackageManager, gatewayDependencies,
-    path.join(__dirname, 'SshGatewayTest.kt'),
-    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbBackendTls.kt'),
-    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbGatewaySocketFactory.kt'),
+  run(process.env.KOTLINC || 'kotlinc', [harness, base64,
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbUdpGateway.kt'),
     '-classpath', classpath, '-include-runtime', '-d', jar]);
   const store = path.join(temp, 'loopback.p12');
@@ -157,12 +121,9 @@ object SxbDeviceProof {
   const deadline = Date.now() + 15000;
   while (!existsSync(peerInfo) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
   assert.ok(existsSync(peerInfo), 'Local SSH data peer did not start');
-  if (!process.argv.includes('--gateway-only') && !process.argv.includes('--tls-fallback-only')) run(process.env.JAVA || 'java', [`-Djavax.net.ssl.trustStore=${store}`,
-    '-Djavax.net.ssl.trustStorePassword=synthetic-test-only', '-cp', `${jar}${path.delimiter}${classpath}`,
-    'SshCompatibilityHarnessKt', store, peerInfo]);
   run(process.env.JAVA || 'java', [`-Djavax.net.ssl.trustStore=${store}`,
     '-Djavax.net.ssl.trustStorePassword=synthetic-test-only', '-cp', `${jar}${path.delimiter}${classpath}`,
-    'SshGatewayTestKt', peerInfo, ...(process.argv.includes('--tls-fallback-only') ? ['tls-fallback-only'] : [])]);
+    'SshCompatibilityHarnessKt', store, peerInfo]);
 } finally {
   peer?.kill();
   rmSync(temp, { recursive: true, force: true });

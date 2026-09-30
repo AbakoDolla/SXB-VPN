@@ -1179,7 +1179,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
          */
         private val PERMANENT_ERROR_CODES = setOf(
             "CONFIG_INVALID", "CONFIG_UNSUPPORTED", "USAGE_CHECKPOINT_UNAVAILABLE",
-            "VPN_PERMISSION_REQUIRED",
+            "VPN_PERMISSION_REQUIRED", "SSH_DIRECT_SYNC_REQUIRED",
         )
 
         /**
@@ -1296,7 +1296,6 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private val foregroundStarted = AtomicBoolean(false)
     private var tunPfd          : ParcelFileDescriptor? = null
     private var sshSession      : Session? = null
-    @Volatile private var gatewaySocketFactory: SxbGatewaySocketFactory? = null
     private var socks5Server    : ServerSocket? = null
     private var dnsttProcess    : Process? = null
     private var dnsttProtectServer: LocalServerSocket? = null
@@ -1306,6 +1305,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var dnsttOutputThread: Thread? = null
     /** Instance sing-box in-process (remplace l'ancien `Process` externe). */
     private var boxService      : BoxService? = null
+    @Volatile private var sshTransportSocket: Socket? = null
     private var vpnThread       : Thread? = null
     private var killSwitchEnabled = false
     /** B10 — Interface de blocage maintenue quand le tunnel réel est indisponible. */
@@ -1493,8 +1493,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             SshTransportStrategy("tls_raw", true, normalized, sni),
             SshTransportStrategy("tls_ws", true, websocketPayload(normalized, host, port), sni),
             SshTransportStrategy("ws", false, websocketPayload(normalized, host, port), sni),
-        // Un échec TLS ne donne jamais l'autorisation d'envoyer le profil en clair.
-        ).filter { !tlsEnabled || it.tls }
+        // Never add TLS to a plain SSH payload or downgrade declared TLS.
+        ).filter { it.tls == tlsEnabled }
             .distinctBy { "${it.mode}|${it.tls}|${it.payload}" }
     }
 
@@ -1845,7 +1845,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return
             if (::autoReconnect.isInitialized) autoReconnect.markStopped("system_vpn_revoke")
             interruptForAccess()
-            runCatching { gatewaySocketFactory?.close() }
+            runCatching { sshTransportSocket?.close() }
             runCatching { sshSession?.disconnect() }
             runCatching { socks5Server?.close() }
             setCurrentState("disconnected")
@@ -2124,17 +2124,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             trace("SSH_TUNNEL_START", "state=$currentState")
             val cfg = JSONObject(configJsonStr)
 
-            val relay = cfg.optJSONObject("sshRelay")
-            if (relay != null) {
-                require(relay.optInt("version") == 1 && cfg.optString("host") == "sxb-gateway" &&
-                    cfg.optString("username") == "sxb" && cfg.optString("protocol") == "ssh" &&
-                    cfg.optInt("port") == 443 &&
-                    listOf("password", "privateKeyBase64", "payload", "privateKey", "sni", "slowDns",
-                        "sshTransport", "usePayload", "proxyHost", "proxyPort", "proxyEnabled",
-                        "tls", "tlsEnabled", "insecure", "allowInsecure", "fingerprint")
-                        .none { cfg.has(it) }) { "SSH_RELAY_CONFIG_INVALID" }
-                broadcastLog("[SXB] Connexion à la passerelle SSH sécurisée")
-            }
+            require(!cfg.has("sshRelay") && cfg.optString("host") != "sxb-gateway") { "SSH_DIRECT_SYNC_REQUIRED" }
             val host       = cfg.optStringOrNull("host", "")
             val port       = cfg.optInt("port", 22)
             val payloadTargetPort = cfg.optInt("payloadTargetPort", port)
@@ -2279,11 +2269,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // comportement historique est conservé pour ne pas rompre les connexions
             // existantes (voir SxbHostKeyVerifier).
             val hostKeyVerifier = SxbHostKeyVerifier(this, fingerprint) { event -> broadcastLog(event) }
-            if (relay == null) jsch.hostKeyRepository = hostKeyVerifier
-            if (relay != null) {
-                // The gateway identity is verified by outer TLS; upstream SSH is pinned server-side.
-                broadcastLog("[SXB_TRACE] stage=SSH_GATEWAY_TLS_REQUIRED")
-            } else if (hostKeyVerifier.ignoredFingerprint) {
+            jsch.hostKeyRepository = hostKeyVerifier
+            if (hostKeyVerifier.ignoredFingerprint) {
                 // Le champ `fingerprint` sert aussi de profil uTLS pour sing-box
                 // (« chrome », « firefox »…) : une telle valeur n'est pas une
                 // empreinte de clé et ne doit pas bloquer la connexion SSH.
@@ -2324,16 +2311,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         }
                     })
                     s.setConfig(commonProps)
-                    if (relay != null) {
-                        val factory = SxbGatewaySocketFactory(
-                            this, relay.getString("ticket"), cfg.getString("deviceId"),
-                            cfg.getString("connectionId"), ::protectSocket, { message -> broadcastLog(message) },
-                            configId = cfg.getString("configId"),
-                        )
-                        gatewaySocketFactory = factory
-                        if (!running.get()) { factory.close(); throw java.io.IOException("SSH_RELAY_CANCELLED") }
-                        s.setSocketFactory(factory)
-                    } else if (strategy != null) {
+                    if (strategy != null) {
                         val strategyTlsServerName = sni.ifBlank {
                             when {
                                 dnsttPort != null -> host
@@ -2974,7 +2952,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         return when {
             lower.contains("privacy_consent_required") -> "PRIVACY_CONSENT_REQUIRED"
             lower.contains("ssh_socket_protect_failed") -> "SSH_SOCKET_PROTECT_FAILED"
-            lower.contains("ssh_relay_tls_timeout") -> "TLS_TIMEOUT"
+            lower.contains("ssh_direct_sync_required") -> "SSH_DIRECT_SYNC_REQUIRED"
             lower.contains("vpn_permission_required") -> "VPN_PERMISSION_REQUIRED"
             lower.contains("reject hostkey") || lower.contains("hostkey has been changed") ||
                 lower.contains("unknownhostkey") -> "SSH_HOST_KEY_FAILED"
@@ -3034,7 +3012,6 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     private fun classifyVpnError(error: Throwable): String {
         val causes = generateSequence(error) { it.cause }.take(4).toList()
-        if (causes.any { it.message == "SSH_RELAY_TLS_TIMEOUT" }) return "TLS_TIMEOUT"
         return causes.asReversed()
             .map { classifyVpnError("${it.javaClass.simpleName}: ${it.message.orEmpty()}") }
             .firstOrNull { it != "VPN_FAILED" } ?: "VPN_FAILED"
@@ -3426,8 +3403,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     /** Protège un `Socket` Java (utilisé par les tunnels SSH/JSch). */
     private fun protectSocket(socket: Socket): Boolean {
-        SxbAccessControl.checkStart(this, JSONObject(configJson))
-        check(running.get()) { "ACCESS_ATTEMPT_CANCELLED" }
+        synchronized(SxbAccessControl) {
+            SxbAccessControl.checkStart(this, JSONObject(configJson))
+            check(running.get()) { "ACCESS_ATTEMPT_CANCELLED" }
+            sshTransportSocket = socket
+        }
         // protect() peut renvoyer false/échouer quand le TUN n'est pas encore créé
         // (ROMs strictes) : 3 tentatives espacées. Non bloquant à ce stade — avant
         // l'établissement du TUN, un socket non protégé ne peut pas boucler.
@@ -6082,8 +6062,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         boxService = null
         engineLogThrottle.reset().forEach(::broadcastEngineLogSummary)
 
-        runCatching { gatewaySocketFactory?.close() }; gatewaySocketFactory = null
         runCatching { sshSession?.disconnect() }; sshSession     = null
+        runCatching { sshTransportSocket?.close() }; sshTransportSocket = null
 
         runCatching { trafficManager.stop() }
             .onFailure { Log.e(TAG, "USAGE_CHECKPOINT_STOP_PENDING", it) }
@@ -6147,7 +6127,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     fun hasTunnelResources(): Boolean =
         running.get() || dispatchInFlight() || boxService != null || tunPfd != null ||
-            gatewaySocketFactory != null || sshSession != null || socks5Server != null
+            sshSession != null || sshTransportSocket?.isClosed == false || socks5Server != null
 
     fun usageSessionId(): String? =
         if (configJson.isEmpty()) null else JSONObject(configJson).optString("usageSessionId").takeIf { it.isNotEmpty() }
@@ -6208,7 +6188,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // Unlike the best-effort normal shutdown, withdrawal surfaces failures.
         boxService?.close()
         boxService = null
-        gatewaySocketFactory?.close()
+        sshTransportSocket?.close()
         sshSession?.disconnect()
         socks5Server?.close()
         tunPfd?.close()
@@ -6228,8 +6208,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         boxService = null
         sshSession?.disconnect()
         sshSession = null
-        gatewaySocketFactory?.close()
-        gatewaySocketFactory = null
+        sshTransportSocket?.close()
+        sshTransportSocket = null
         socks5Server?.close()
         socks5Server = null
         tunPfd?.close()

@@ -51,6 +51,7 @@ await build({
     export * as proof from './server/services/mobile-proof';
     export * as gate from './server/services/security-gate';
     export * as relay from './server/services/ssh-relay-auth';
+    export * as legacyRelayTickets from './server/services/ssh-relay-ticket';
     export * as canonical from './server/services/canonical-config';
   `, resolveDir: root, loader: 'ts' },
   outfile: output, platform: 'node', format: 'cjs', bundle: true, packages: 'external',
@@ -64,7 +65,8 @@ await build({
     },
   }],
 });
-const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, presence, prisma, sessions, proof, gate, relay, canonical, logDbActivity } = require(output);
+const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, presence, prisma, sessions, proof, gate, relay,
+  legacyRelayTickets, canonical, logDbActivity } = require(output);
 const app = express();
 app.use(express.json({ verify: (req, _res, bytes) => { req.rawBody = Buffer.from(bytes); } }));
 app.use('/api/mobile', mobile);
@@ -226,27 +228,73 @@ try {
   check('unprotected profile preserves direct provider configuration',
     decryptProvision(await request(a, provisionTarget, provisionBody, a.tokens.accessToken)).host, provider.host);
   process.env.SXB_SSH_RELAY_PROFILE_IDS = profile.id;
-  check('protected profile cannot leak direct configuration to an old native client',
-    (await request(a, provisionTarget, provisionBody, a.tokens.accessToken)).data.code, 'RELAY_CLIENT_UPDATE_REQUIRED');
-  const gateway = decryptProvision(await provisionWithCapability());
-  check('new native receives only gateway host', gateway.host, 'sxb-gateway');
+  const delivered = decryptProvision(await provisionWithCapability());
+  check('old forced relay policy cannot replace the directly provisioned host', delivered.host, provider.host);
+  check('direct provider username survives sealed provisioning', delivered.username, provider.username);
+  check('direct provider password survives sealed provisioning', delivered.password, provider.password);
+  check('no relay credential or extra TLS is injected into direct provisioning',
+    delivered.sshRelay === undefined && delivered.tls !== true && delivered.tlsEnabled !== true, true);
+  const legacyClaims = jwt.decode(a.tokens.accessToken);
+  // Existing installations can finish already-issued tickets; new provisioning never issues one.
+  const legacyCredential = legacyRelayTickets.issueRelayTicket({
+    userId: ids[0].userId, clientId: a.client.id, deviceId: a.id,
+    sid: legacyClaims.sid, sg: legacyClaims.sg, kid: legacyClaims.kid,
+    subscriptionId: sub.id, configHash: canonical.computeCanonicalHash(provider),
+  }, process.env.JWT_SECRET, Date.now() + 60_000);
+  const gateway = { sshRelay: legacyCredential };
   check('metadata endpoint does not expose provider URI or SNI',
     (await request(a, `/api/mobile/vpn/config?subscriptionId=${sub.id}`, undefined, a.tokens.accessToken)).data.connectionUri, null);
-  check('provider secrets never occur inside decrypted relay provision',
-    /provider\.invalid|synthetic-provider/.test(JSON.stringify(gateway)), false);
   delete process.env.SXB_SSH_RELAY_PROFILE_IDS;
   check('capable native outside allowlist remains direct', decryptProvision(await provisionWithCapability()).host, provider.host);
   process.env.SXB_SSH_RELAY_REQUIRED_FROM = profile.createdAt.toISOString();
-  check('future SSH profile automatically receives only the gateway', decryptProvision(await provisionWithCapability()).host, 'sxb-gateway');
+  check('future SSH cutoff cannot force a newly provisioned profile through the gateway',
+    decryptProvision(await provisionWithCapability()).host, provider.host);
   const automaticAccess = (await request(a, '/api/mobile/connections', undefined, a.tokens.accessToken)).data.connections;
-  check('future SSH policy is advertised for cache migration', automaticAccess.find(item => item.id === sub.id).sshRelayAvailable, true);
+  check('SSH delivery advertises direct cache migration', automaticAccess.find(item => item.id === sub.id).sshDirectAvailable, true);
+  check('old gateway requirement is not advertised', automaticAccess.find(item => item.id === sub.id).sshRelayAvailable, false);
   check('future SSH metadata hides provider URI',
     (await request(a, `/api/mobile/vpn/config?subscriptionId=${sub.id}`, undefined, a.tokens.accessToken)).data.connectionUri, null);
-  check('future SSH without capability is explicitly refused',
-    (await request(a, provisionTarget, provisionBody, a.tokens.accessToken)).status, 426);
+  check('ordinary SSH remains compatible with older direct clients without a relay capability',
+    decryptProvision(await request(a, provisionTarget, provisionBody, a.tokens.accessToken)).host, provider.host);
+  const secondDirectPlan = await prisma.subscription.create({ data: {
+    name: 'SYNTHETIC SECOND DEVICE DIRECT SSH PLAN', clientId: b.client.id, profileId: profile.id,
+    dataToken: `SXB-DATA-DIRECT-B-${suffix}`.toUpperCase(), durationDays: 30,
+    quotaBytes: 1073741824n, deviceId: b.id,
+  } });
+  const multipleDirect = await Promise.all([
+    request(a, provisionTarget, provisionBody, a.tokens.accessToken),
+    request(b, provisionTarget, { dataToken: secondDirectPlan.dataToken, deviceId: b.id }, b.tokens.accessToken),
+  ]);
+  const directByDevice = multipleDirect.map(decryptProvision);
+  for (const [index, actor] of [a, b].entries()) {
+    check(`shared supplier is delivered directly to authorized device ${index}`, directByDevice[index].host, provider.host);
+    check(`each direct configuration remains device-bound ${index}`, directByDevice[index].deviceId, actor.id);
+    check(`each device receives the original SSH identity ${index}`, directByDevice[index].username, provider.username);
+    check(`no shared gateway credential is issued to device ${index}`, directByDevice[index].sshRelay, undefined);
+  }
+  check('shared supplier does not share device encryption keys',
+    multipleDirect[0].data.config.configKey === multipleDirect[1].data.config.configKey, false);
+  check('a second device cannot provision the first device entitlement',
+    (await request(b, provisionTarget, { ...provisionBody, deviceId: b.id }, b.tokens.accessToken)).status, 404);
+  await prisma.subscription.delete({ where: { id: secondDirectPlan.id } });
   const { fingerprint, ...unpinned } = provider;
   await prisma.vpnProfile.update({ where: { id: profile.id }, data: providerFields(unpinned) });
-  check('unverified upstream is explicitly refused', (await provisionWithCapability()).data.code, 'RELAY_PROFILE_NOT_READY');
+  check('a normal SSH profile without an operator pin is not forced to depend on relay setup',
+    decryptProvision(await provisionWithCapability()).host, provider.host);
+  const payloadProvider = { ...provider, protocol: 'ssh+payload', tls: false, sshTransport: 'http-connect',
+    usePayload: true, proxyEnabled: true, proxyHost: 'proxy.example.test', proxyPort: 8080,
+    payload: '[method] [ssh] [protocol][crlf]Host: [host_header][crlf][delay_split][crlf]' };
+  await prisma.vpnProfile.update({ where: { id: profile.id }, data: { protocol: 'ssh+payload', ...providerFields(payloadProvider) } });
+  const directPayload = decryptProvision(await provisionWithCapability());
+  for (const field of ['host', 'port', 'username', 'password', 'tls', 'sshTransport', 'proxyHost', 'proxyPort', 'payload']) {
+    check(`direct provisioning preserves the imported payload field ${field}`, directPayload[field], payloadProvider[field]);
+  }
+  const explicitTlsProvider = { ...payloadProvider, tls: true, sshTransport: 'payload-tls', sni: 'provider.example.test' };
+  await prisma.vpnProfile.update({ where: { id: profile.id }, data: providerFields(explicitTlsProvider) });
+  const explicitTls = decryptProvision(await provisionWithCapability());
+  check('explicit supplier SSH TLS is preserved rather than silently downgraded', explicitTls.tls, true);
+  check('explicit supplier SNI is preserved', explicitTls.sni, explicitTlsProvider.sni);
+  check('explicit supplier TLS still has no central gateway', explicitTls.sshRelay, undefined);
   const vless = { protocol: 'vless', host: 'vless.invalid', port: 443, uuid: randomUUID(), tls: true };
   await prisma.vpnProfile.update({ where: { id: profile.id }, data: { protocol: 'vless', ...providerFields(vless) } });
   check('future non-SSH profile remains unchanged', decryptProvision(await provisionWithCapability()).host, vless.host);
@@ -254,9 +302,10 @@ try {
   const relayConnection = { action: 'connect', connectionId: randomUUID(), sessionId: `sess_${randomUUID()}`,
     subscriptionId: sub.id, configId: profile.id, relayTicket: gateway.sshRelay.ticket };
   const directAttempt = { ...relayConnection, relayTicket: undefined, connectionId: randomUUID(), sessionId: `sess_${randomUUID()}` };
-  check('cached direct configuration cannot register a future protected profile',
-    (await request(a, '/api/mobile/vpn/session', directAttempt, a.tokens.accessToken)).data.reason, 'RELAY_REQUIRED');
-  check('refused direct registration leaves no binding', await prisma.mobileConnection.count({ where: { id: directAttempt.connectionId } }), 0);
+  check('cached direct SSH can register under the old gateway cutoff',
+    (await request(a, '/api/mobile/vpn/session', directAttempt, a.tokens.accessToken)).status, 200);
+  check('direct SSH creates a direct accounting binding, not a relay binding',
+    (await prisma.mobileConnection.findUniqueOrThrow({ where: { id: directAttempt.connectionId } })).relayConfigHash, null);
   check('relay connection registered', (await request(a, '/api/mobile/vpn/session', relayConnection, a.tokens.accessToken)).status, 200);
   check('relay registration retry remains valid', (await request(a, '/api/mobile/vpn/session', relayConnection, a.tokens.accessToken)).status, 200);
   const { relayTicket, ...directRetry } = relayConnection;
