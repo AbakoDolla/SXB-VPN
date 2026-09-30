@@ -12,7 +12,7 @@
  * Mapping obligatoire (mission PARTIE 2) :
  *   - vless/vmess/trojan + settings.vnext[0] → {type, tag, server,
  *     server_port, uuid/password} ; flow vide/absent → ignoré ;
- *     flow xtls-rprx-* → REFUS.
+ *     flow xtls-rprx-vision → conservé ; autre flow non pris en charge → refus.
  *   - security tls/reality → tls {enabled, server_name, insecure | reality}.
  *   - network ws/grpc/tcp → transport ws/grpc ou pas de transport.
  *   - autres réseaux (kcp, quic, h2…) → REFUS avec nom de la feature.
@@ -27,6 +27,7 @@
  */
 
 import { wireguardEndpoint, validateShadowsocksKey, validateVmessSecurity, hasWireguardEndpoints, ipVersion as isIP } from './protocol-bundle';
+import { tlsNameForEndpoint } from './protocol-uri';
 
 export interface TranslationResult {
   ok: boolean;
@@ -106,21 +107,30 @@ function translateStreamSettings(
 
   // ── TLS / Reality ─────────────────────────────────────────────────────────
   if (security === 'tls' || security === 'reality') {
-    const tlsSettings = ss.tlsSettings ?? ss.realitySettings ?? {};
+    const tlsSettings = (security === 'reality' ? ss.realitySettings : ss.tlsSettings) ?? {};
     const hostHeader = ss.wsSettings?.headers?.Host
+      ?? ss.wsSettings?.headers?.host
+      ?? ss.httpupgradeSettings?.host
       ?? (Array.isArray(ss.httpSettings?.host) ? ss.httpSettings.host[0] : null)
       ?? '';
     const tls: Record<string, any> = { enabled: true };
-    tls.server_name = String(tlsSettings.serverName || hostHeader || defaultServerName || '');
+    tls.server_name = String(tlsSettings.serverName || tlsNameForEndpoint(defaultServerName, String(hostHeader)));
+    const fingerprint = typeof tlsSettings.fingerprint === 'string' ? tlsSettings.fingerprint.trim().toLowerCase() : '';
+    if (fingerprint || security === 'reality' || out.type === 'vless') {
+      tls.utls = fingerprint === 'none' && security !== 'reality' ? { enabled: false }
+        : { enabled: true, fingerprint: !fingerprint || fingerprint === 'none' ? 'chrome' : fingerprint };
+    }
+    if (Array.isArray(tlsSettings.alpn) && tlsSettings.alpn.length > 0) {
+      tls.alpn = tlsSettings.alpn.map((value: any) => String(value));
+    } else if (['ws', 'websocket', 'httpupgrade'].includes(network)) tls.alpn = ['http/1.1'];
     if (security === 'reality') {
       const publicKey = tlsSettings.publicKey;
       const shortId = tlsSettings.shortId;
-      if (!publicKey || !shortId) {
-        errors.push('Xray : security "reality" — champs manquants (publicKey et shortId requis) — import refusé');
+      if (!publicKey || shortId !== undefined && typeof shortId !== 'string') {
+        errors.push('Xray : security "reality" — publicKey requis et shortId attendu comme chaîne — import refusé');
         return;
       }
-      tls.reality = { enabled: true, public_key: String(publicKey), short_id: String(shortId) };
-      if (tlsSettings.fingerprint) warnings.push(`fingerprint reality "${tlsSettings.fingerprint}" ignoré (géré par le moteur mobile)`);
+      tls.reality = { enabled: true, public_key: String(publicKey), short_id: shortId ?? '' };
       if (tlsSettings.spiderX) warnings.push('spiderX reality ignoré (non traduit par sing-box)');
     } else {
       // tlsSettings.allowInsecure toléré mais noté
@@ -129,12 +139,6 @@ function translateStreamSettings(
       }
       tls.insecure = tlsSettings.allowInsecure === true;
       if (tls.insecure) warnings.push('TLS allowInsecure=true conserve explicitement : certificat du fournisseur non verifie');
-      if (typeof tlsSettings.fingerprint === 'string' && tlsSettings.fingerprint.trim()) {
-        tls.utls = { enabled: true, fingerprint: tlsSettings.fingerprint.trim().toLowerCase() };
-      }
-      if (Array.isArray(tlsSettings.alpn) && tlsSettings.alpn.length > 0) {
-        tls.alpn = tlsSettings.alpn.map((value: any) => String(value));
-      }
     }
     out.tls = tls;
   } else if (security !== 'none' && security !== '') {
@@ -142,9 +146,9 @@ function translateStreamSettings(
   }
 
   // ── Transport (network) ───────────────────────────────────────────────────
-  if (network === 'tcp' || network === '') {
+  if (network === 'tcp' || network === 'raw' || network === '') {
     // raw — pas de transport
-  } else if (network === 'ws') {
+  } else if (network === 'ws' || network === 'websocket') {
     const ws = ss.wsSettings ?? {};
     const transport: Record<string, any> = { type: 'ws', path: ws.path || '/' };
     if (ws.headers && typeof ws.headers === 'object' && Object.keys(ws.headers).length > 0) {
@@ -563,13 +567,9 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
         }
       }
 
-      // flow : vide/absent → ignoré ; xtls-rprx-* → REFUS (flow Vision non supporté)
-      if (flow && /^xtls-rprx/i.test(flow)) {
-        errors.push(`flow Vision non supporté par sing-box : "${flow}" — import refusé`);
+      if (flow && (proto !== 'vless' || flow !== 'xtls-rprx-vision')) {
+        errors.push(`flow non supporté par sing-box : "${flow}" — import refusé`);
         continue;
-      }
-      if (flow) {
-        warnings.push(`flow "${flow}" ignoré (non traduit par sing-box)`);
       }
 
       if (!validServer(server, port)) {
@@ -592,6 +592,7 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
         out.password = password;
       } else {
         out.uuid = uuid;
+        if (flow) out.flow = flow;
         if (proto === 'vmess') {
           out.alter_id = alterId;
           out.security = String(settings.vnext?.[0]?.users?.[0]?.security ?? 'auto');

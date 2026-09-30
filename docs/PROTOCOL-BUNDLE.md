@@ -195,21 +195,43 @@ Requirements before opting in a profile:
   OpenSSH SHA256 host-key fingerprint; never learn the fingerprint blindly.
 - SSH destination reachable from the VPS, not merely from the mobile carrier.
   Direct SSH, TLS and supported HTTP payloads are accepted. SlowDNS,
-  insecure TLS, real WebSocket framing, split/rotating templates and conflicting
+  insecure TLS, real WebSocket framing, stateful rotating templates and conflicting
   port overrides are refused rather than silently reinterpreted.
+  Deterministic `[method]`, `[protocol]`, `[ssh]`, `[host]`, `[host_port]`,
+  `[host_header]`, `[sni]`, `[ua]`, `[crlf]`, `[cr]` and `[lf]` tokens use the
+  same logical SSH endpoint as Android, not the physical HTTP proxy.
+  `[split]`/`[instant_split]` flush consecutive writes and `[delay_split]`
+  delays the next non-empty chunk by one second. Directives are not sent as
+  text, cancellation stops remaining chunks, and at most 32 chunks are allowed
+  within the existing connection budget. These application writes do not
+  guarantee packet boundaries or bypass a carrier's blocked TLS ingress.
 - TLS ingress at the fixed backend URL. The deployment adds only an exact
   `/api/mobile/ssh-relay` location to the site's TLS vhost, using the backend
   port from `.env`. Other sites and API routes are preserved. The candidate
   configuration is backed up, checked with `nginx -t` and restored on rejection.
   An ambiguous/conflicting vhost requires manual review; it is not guessed.
 
-The mobile opens a protected, hostname-verified TLS socket with optional
-compiled backend pins, then requests an authenticated HTTP Upgrade. Its
+The mobile opens a protected, hostname-verified TLS socket with reviewed
+current and backup SPKI pins, then requests an authenticated HTTP Upgrade. Its
 ticket has a distinct signing key derivation/audience and is unusable without
 a fresh device proof and an immutable connection binding. Internal SSH offers
 only forwarding, never shell, exec or SFTP. Supplier fingerprint verification
 precedes password authentication. Private/local upstream addresses are refused.
 The gateway itself remains visible to network observers.
+
+VLESS import parity is checked from URI, Xray JSON and shared JSON into the
+actual native flat and raw builders. A missing SNI uses the TCP endpoint's name,
+not the WebSocket Host, except for literal IPs where the declared HTTP hostname
+is the fallback. Active `realitySettings` take precedence over dormant
+`tlsSettings`; fingerprint, ALPN, Reality key/short ID, gRPC service and Vision
+flow are retained. URI query values are decoded exactly once. Explicit native
+TLS (`fingerprint: none` / `utls.enabled: false`) stays disabled even after
+repeated runtime normalization. Unsupported flows fail explicitly.
+
+Canonical encrypted profiles and their hashes are not silently rewritten.
+An already-translated profile with an incorrectly inferred SNI cannot safely
+be distinguished from one with that explicit SNI: reimport the original JSON
+to correct it. Client runtime normalization repairs only absent/default fields.
 
 Gateway TLS negotiation offers TLS 1.3 and TLS 1.2 only. A silent handshake
 timeout can retry once on a fresh protected socket with TLS 1.2, still against
@@ -220,6 +242,35 @@ dial, share the existing 20-second TLS budget. The journal distinguishes the
 compatible retry and `TLS_TIMEOUT` from a TCP timeout. This can recover a
 version-sensitive TLS path; it does not make an operator-blocked gateway
 reachable or authorize a different hostname.
+
+Backend pins are public-key hashes, not secrets and not replacements for normal
+certificate-chain or hostname validation. `app-mobile/security/backend-pins.json`
+is the reviewed source used by the Expo plugin. Release builds require two distinct
+keys and apply the same policy to the React API client, the native access observer
+and gateway sockets. Empty/duplicate/invalid required policies fail closed.
+The APK publication gate independently verifies that the live certificate's
+public key matches the compiled policy before replacing the public download.
+
+The manual `backend-tls-pinning.yml` operator inspects the exact TLS vhost and
+renewal configuration, then prepares a stable renewal key and an independent
+root-owned backup only after explicit confirmation with the exact public pin
+and renewal revision. Preparation does not replace the live certificate or
+restart services. It retains a root-only pre-edit renewal backup and refuses
+conflicting `new_key` policy or ambiguous vhosts. The backup private key stays
+on the VPS. Before deliberately rotating TLS keys, issue and validate a normal
+CA certificate for the prepared key, publish the next backup pin to clients
+with sufficient overlap, and coordinate the rotation; do not bypass a pin failure.
+
+Loss of Android VPN permission is different from radio loss. It now closes
+pending SSH/gateway sockets and cancels native recovery synchronously, before
+the UI thread can lag. A durable local permission generation prevents process
+restart or an old worker from clearing the stop. Only the UI's explicit permission
+request can acknowledge the new generation, and account/profile restrictions
+are checked separately. JavaScript receives `VPN_PERMISSION_REQUIRED` and drops
+old auto-connect/presentation intents. A delayed revoke cannot stop a newly granted
+generation. Normal cellular reconnects retain their current generation and
+do not require an Internet preflight. Permission-storage failures stop safely
+instead of silently permitting another start.
 
 Tickets last at most seven days, bounded by the activation session and initial
 configuration validity. Background observation renews a near-expired ticket

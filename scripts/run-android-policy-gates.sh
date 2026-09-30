@@ -89,6 +89,12 @@ for input in "$HARNESS/xray"/bundle-*.json; do
   node --experimental-strip-types ../scripts/tests/xray-runtime-fixture.mjs --check-bundle "$runtime"
   "$HARNESS/engine-check" "$runtime" "$ROOT/app-mobile/build/engine-data"
 done
+for input in "$HARNESS/xray"/parity-*.json; do
+  runtime="$HARNESS/xray/runtime-${input##*/}"
+  java -cp "$HARNESS/xray/harness.jar:$SXB_JSON_JAR" XrayRuntimeHarnessKt "$input" "$runtime"
+  "$HARNESS/engine-check" "$runtime" "$ROOT/app-mobile/build/engine-data"
+done
+node --experimental-strip-types ../scripts/tests/xray-runtime-fixture.mjs --check-parity "$HARNESS/xray"
 go -C ../scripts/tests/singbox-engine-check build -mod=mod \
   -tags with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_conntrack \
   -o "$HARNESS/sing-box" github.com/sagernet/sing-box/cmd/sing-box

@@ -159,7 +159,11 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             val ctx = reactApplicationContext
             check(SxbPrivacyPolicy.vpnAllowed(ctx)) { "PRIVACY_CONSENT_REQUIRED" }
             val vpnIntent = VpnService.prepare(ctx)
-            if (vpnIntent == null) { promise.resolve(true); return }
+            if (vpnIntent == null) {
+                SxbAccessControl.acknowledgeVpnPermission(ctx)
+                promise.resolve(true)
+                return
+            }
 
             val activity = reactApplicationContext.currentActivity
             if (activity == null) { promise.resolve(false); return }
@@ -167,14 +171,23 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             vpnPermissionPromise = promise
             activity.startActivityForResult(vpnIntent, VPN_REQUEST_CODE)
         } catch (e: Exception) {
-            promise.reject("PERMISSION_ERROR", e.message ?: "Erreur permission VPN", e)
+            val code = e.message?.takeIf { it in setOf("VPN_PERMISSION_REQUIRED", "VPN_PERMISSION_STORAGE_FAILED") }
+                ?: "PERMISSION_ERROR"
+            promise.reject(code, e.message ?: "Erreur permission VPN", e)
         }
     }
 
     override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == VPN_REQUEST_CODE) {
-            vpnPermissionPromise?.resolve(resultCode == Activity.RESULT_OK)
-            vpnPermissionPromise = null
+            try {
+                val granted = resultCode == Activity.RESULT_OK && VpnService.prepare(reactApplicationContext) == null
+                if (granted) SxbAccessControl.acknowledgeVpnPermission(reactApplicationContext)
+                vpnPermissionPromise?.resolve(granted)
+            } catch (error: Exception) {
+                vpnPermissionPromise?.reject("VPN_PERMISSION_STORAGE_FAILED", "VPN permission state could not be persisted", error)
+            } finally {
+                vpnPermissionPromise = null
+            }
         }
     }
 
@@ -290,7 +303,9 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
         } catch (e: Exception) {
             SxbSecureLogger.error(SxbSecureLogger.VpnEvent.MODULE_REJECTED, e)
-            promise.reject("START_ERROR", e.message ?: "Erreur démarrage VPN", e)
+            val code = e.message?.takeIf { it in setOf("VPN_PERMISSION_REQUIRED", "VPN_PERMISSION_STORAGE_FAILED") }
+                ?: "START_ERROR"
+            promise.reject(code, e.message ?: "Erreur démarrage VPN", e)
         }
     }
 

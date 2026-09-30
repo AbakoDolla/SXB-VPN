@@ -104,7 +104,7 @@ export function lireProfilV2rayN(obj: any): Record<string, any> | null {
 
   if (reseau) cfg.network = reseau;
   const valeurTls = obj.tls ?? obj.streamSecurity ?? obj.security;
-  cfg.tls = valeurTls === true || String(valeurTls ?? '').toLowerCase() === 'tls';
+  cfg.tls = valeurTls === true || ['tls', 'reality'].includes(String(valeurTls ?? '').toLowerCase());
 
   const chemin = obj.path ?? obj.requestPath;
   if (chemin) cfg.path = decoder(String(chemin));
@@ -133,6 +133,10 @@ export function lireProfilV2rayN(obj: any): Record<string, any> | null {
   if (typeEnTete && String(typeEnTete).toLowerCase() !== 'none') cfg.headerType = String(typeEnTete);
   const empreinte = obj.fp ?? obj.fingerprint;
   if (empreinte) cfg.fingerprint = String(empreinte);
+  for (const [alias, target] of [['pbk', 'publicKey'], ['sid', 'shortId'], ['spx', 'spiderX'], ['serviceName', 'grpcServiceName']]) {
+    const valeur = obj[target] ?? obj[alias];
+    if (valeur !== undefined) cfg[target] = String(valeur);
+  }
   if (obj.alpn) {
     cfg.alpn = Array.isArray(obj.alpn) ? obj.alpn.map((v: any) => String(v)).join(',') : String(obj.alpn);
   }

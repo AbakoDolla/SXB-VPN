@@ -19,6 +19,7 @@ export const fr = {
   log_captive_portal: 'Le réseau exige une connexion (portail Wi-Fi).',
   log_dns_failed: 'Le serveur est introuvable sur ce réseau.',
   log_timeout: 'Le serveur n\'a pas répondu à temps.',
+  log_backend_identity_failed: 'L’identité de la passerelle n’a pas pu être confirmée. Connexion arrêtée.',
   log_refused: 'Le serveur a refusé la connexion.',
   log_handshake_failed: 'Le serveur a répondu autre chose que prévu.',
   log_no_network: 'Aucun réseau disponible.',

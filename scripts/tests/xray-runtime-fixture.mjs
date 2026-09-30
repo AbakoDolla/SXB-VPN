@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { xrayHttpChainFixture } from './fixtures/xray-http-chain.mjs';
 import { bundleXray } from './fixtures/protocol-bundle.mjs';
+import { vlessParityFixtures } from './fixtures/vless-parity.mjs';
 
 const { parseImportedConfig, engineConfigFromCanonical } = await import('../../server/services/canonical-config.ts');
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -16,6 +17,10 @@ export function nativeCompatibilityHarnessSource() {
     'tunInbound', 'isLiteralIp', 'dnsAddressHost', 'applyDnsLoopGuard',
     'stripUnsupportedSingBoxVlessFields', 'convertXrayToSingBoxIfNeeded',
     'normalizeRawSingBoxCompatibility', 'buildRawSingBoxConfig',
+    'buildSingBoxConfig', 'profileDnsObject', 'defaultDnsObject',
+    'applyTransport', 'buildVlessOutbound', 'buildVmessOutbound', 'buildTrojanOutbound',
+    'buildShadowsocksOutbound', 'buildWireGuardOutbound', 'buildTuicOutbound', 'buildTlsObj',
+    'csvToJsonArray', 'buildTransportObj', 'buildWsTransport', 'buildGrpcTransport',
   ].map(name => {
     const match = service.match(new RegExp(`^    private fun ${name}\\([\\s\\S]*?^    }`, 'm'));
     assert.ok(match, `Native method ${name} must be extracted, not replaced with a JS approximation`);
@@ -37,6 +42,14 @@ export function nativeCompatibilityHarnessSource() {
   for (const membre of ['transportSansUdp', 'quicBlockRule', 'refusDeQuicDejaPresent', 'transportDeLaSortie']) {
     assert.ok(quicBloc.includes(`fun ${membre}`), `QUIC refusal member missing from harness: ${membre}`);
   }
+  const transportStart = service.indexOf('    private data class EngineTransport(');
+  const transportEnd = service.indexOf('\n    )', transportStart) + '\n    )'.length;
+  assert.ok(transportStart > 0 && transportEnd > transportStart);
+  const nullHelperStart = service.indexOf('private fun JSONObject.optStringOrNull(');
+  const nullHelperEnd = service.indexOf('\n}', nullHelperStart) + 2;
+  assert.ok(nullHelperStart > 0 && nullHelperEnd > nullHelperStart);
+  const resolverConstant = service.match(/^\s+private const val RESOLVEUR_TUNNEL[^\r\n]+/m)?.[0].trim();
+  assert.ok(resolverConstant);
   return `import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -44,6 +57,8 @@ import java.util.Locale
 import com.sxbvpn.vpnmodule.SxbTunnelPolicy
 import com.sxbvpn.vpnmodule.SxbEngineSchema
 import com.sxbvpn.vpnmodule.SxbProtocolCompatibility
+${service.slice(nullHelperStart, nullHelperEnd)}
+${resolverConstant}
 
 private object SxbSecureLogger {
     fun warn(message: String) {}
@@ -56,13 +71,16 @@ private class XrayRuntimeHarness {
     // sortie du seul générateur prouverait quelque chose que l'application
     // n'exécute jamais.
     fun build(config: JSONObject): String =
-        SxbEngineSchema.moderniser(JSONObject(buildRawSingBoxConfig(config))).toString(2)
+        SxbEngineSchema.moderniser(JSONObject(
+            if (config.optString("protocol") == "vless") buildSingBoxConfig(config, "vless")
+            else buildRawSingBoxConfig(config)
+        )).toString(2)
     private fun broadcastLog(message: String) {}
     private fun bootstrapDnsAddress(): String = "192.0.2.1"
     private fun dnsStrategy(): String = "ipv4_only"
-    private fun defaultDnsObject(detourTag: String): JSONObject =
-        error("Synthetic profile DNS must not be replaced by the app default")
+    private fun tunnelDnsStrategy(): String = "ipv4_only"
 ${quicBloc}
+${service.slice(transportStart, transportEnd)}
 
 ${methods.join('\n\n')}
 }
@@ -74,6 +92,46 @@ fun main(args: Array<String>) {
     File(args[1]).writeText(runtime)
 }
 `;
+}
+
+export function vlessParityRuntimeInputs() {
+  return vlessParityFixtures.flatMap(({ uri, xray }, index) => {
+    const json = parseImportedConfig(JSON.stringify(xray));
+    const flat = parseImportedConfig(uri);
+    assert.ok(json.ok, json.errors.join(' | '));
+    assert.ok(flat.ok, flat.errors.join(' | '));
+    return [
+      { name: `parity-${index}-uri`, config: { ...engineConfigFromCanonical(flat.canonical), dns: '192.0.2.53' } },
+      { name: `parity-${index}-json`, config: engineConfigFromCanonical(json.canonical) },
+      { name: `parity-${index}-legacy`, config: xray },
+    ];
+  });
+}
+
+export function effectiveVlessOutbound(runtime) {
+  const outbound = structuredClone(runtime.outbounds.find(item => item.type === 'vless'));
+  assert.ok(outbound, 'Runtime must contain a VLESS proxy');
+  delete outbound.tag;
+  if (outbound.tls?.enabled) {
+    outbound.tls.insecure ??= false;
+    outbound.tls.disable_sni ??= false;
+    if (outbound.tls.reality?.short_id === '') delete outbound.tls.reality.short_id;
+    if (outbound.tls.utls?.enabled === false) delete outbound.tls.utls;
+  } else delete outbound.tls;
+  if (outbound.transport?.type === 'ws') {
+    outbound.transport.max_early_data ??= 0;
+    outbound.transport.early_data_header_name ??= '';
+  }
+  return outbound;
+}
+
+export function checkVlessParityRuntime(directory) {
+  for (let index = 0; index < vlessParityFixtures.length; index++) {
+    const runtime = kind => JSON.parse(readFileSync(path.join(directory, `runtime-parity-${index}-${kind}.json`), 'utf8'));
+    const flat = effectiveVlessOutbound(runtime('uri'));
+    assert.deepEqual(effectiveVlessOutbound(runtime('json')), flat, `${vlessParityFixtures[index].name}: translated JSON`);
+    assert.deepEqual(effectiveVlessOutbound(runtime('legacy')), flat, `${vlessParityFixtures[index].name}: legacy native JSON`);
+  }
 }
 
 export function syntheticCanonicalForRuntime() {
@@ -115,7 +173,11 @@ export function checkBundleRuntime(runtime) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv[2] === '--check-bundle') {
+  if (process.argv[2] === '--check-parity') {
+    assert.equal(process.argv.length, 4);
+    checkVlessParityRuntime(process.argv[3]);
+    console.log('Actual Kotlin VLESS outbounds match for URI, translated JSON and legacy JSON.');
+  } else if (process.argv[2] === '--check-bundle') {
     assert.equal(process.argv.length, 4);
     checkBundleRuntime(JSON.parse(readFileSync(process.argv[3], 'utf8')));
     console.log('Source-derived bundle graph preserves bootstrap DNS, exact hosts and WireGuard options.');
@@ -129,6 +191,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     writeFileSync(path.join(output, 'XrayRuntimeHarness.kt'), nativeCompatibilityHarnessSource());
     for (const { name, config } of bundleRuntimeInputs()) {
       writeFileSync(path.join(output, `bundle-${name}.json`), JSON.stringify(config, null, 2));
+    }
+    for (const { name, config } of vlessParityRuntimeInputs()) {
+      writeFileSync(path.join(output, `${name}.json`), JSON.stringify(config, null, 2));
     }
     console.log('Synthetic canonical and source-derived Kotlin runtime harness prepared; no engine was started.');
   }

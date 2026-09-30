@@ -2,6 +2,10 @@ import { parseEndpoint, record } from './protocol-bundle';
 
 export interface ProtocolUri { config: Record<string, any>; name?: string }
 
+export function tlsNameForEndpoint(server: string, httpHost = ''): string {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(server) || server.includes(':') ? httpHost || server : server;
+}
+
 function decode(value: string): string {
   try { return decodeURIComponent(value); }
   catch { throw new Error('URI : valeur encodee invalide'); }

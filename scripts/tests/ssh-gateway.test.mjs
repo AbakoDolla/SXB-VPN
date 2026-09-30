@@ -16,12 +16,14 @@ const output = await require('esbuild').build({
     export * from './server/services/ssh-relay';
     export * from './server/services/ssh-relay-transport';
     export * from './server/services/ssh-relay-ticket';
+    export { substitutePayload, sshPayloadChunks } from './server/services/transport-probe';
   `, resolveDir: root, loader: 'ts' },
   bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external',
 });
 const mod = { exports: {} };
 new Function('require', 'module', 'exports', output.outputFiles[0].text)(require, mod, mod.exports);
-const { installSshRelay, stripRelayHttp, relayUpstream, publicRelayAddress, issueRelayTicket, verifyRelayTicket, relayClientConfig } = mod.exports;
+const { installSshRelay, stripRelayHttp, relayUpstream, publicRelayAddress, issueRelayTicket, verifyRelayTicket,
+  relayClientConfig, substitutePayload, sshPayloadChunks, writeRelayPayload } = mod.exports;
 const key = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' });
 const fingerprint = 'SHA256:' + createHash('sha256').update(utils.parseKey(key).getPublicSSH()).digest('base64');
 const body = Buffer.alloc(1024 * 1024, 0xa5);
@@ -126,6 +128,79 @@ async function fixture(t, changes = {}) {
 
 const forward = (client, host) => new Promise((resolve, reject) =>
   client.forwardOut('127.0.0.1', 0, host, 80, (error, channel) => error ? reject(error) : resolve(channel)));
+
+test('declared SSH tokens and delayed splits reach the HTTP peer as bytes, never marker text', { timeout: 5000 }, async t => {
+  const pieces = [];
+  let finished;
+  const received = new Promise(resolve => { finished = resolve; });
+  const server = net.createServer(peer => {
+    peer.on('error', () => peer.destroy());
+    peer.on('data', data => {
+      pieces.push({ data: data.toString('latin1'), at: Date.now() });
+      if (pieces.map(item => item.data).join('').endsWith('\r\n\r\n')) {
+        peer.write('HTTP/1.1 200 OK\r\n\r\nSSH-2.0-fixture\r\n');
+        finished();
+      }
+    });
+  });
+  const port = await listen(server);
+  const socket = net.connect(port, '127.0.0.1');
+  socket.on('error', () => {});
+  t.after(async () => { socket.destroy(); await new Promise(resolve => server.close(resolve)); });
+  await once(socket, 'connect');
+  const payload = substitutePayload(
+    '[method] [ssh] [protocol][crlf]Host: [host_header][cr][lf][delay_split]' +
+      'X-SNI: [sni][crlf]User-Agent: [ua][crlf][instant_split][crlf]',
+    'ssh.example.test', 'tls.example.test', 2222, 'Synthetic-SXB/1',
+  );
+  const chunks = sshPayloadChunks(payload);
+  const written = await writeRelayPayload(socket, payload, new AbortController().signal);
+  await received;
+  const wire = pieces.map(item => item.data).join('');
+  assert.equal(wire, chunks.map(chunk => chunk.text).join(''));
+  assert.equal(written, Buffer.byteLength(wire, 'latin1'));
+  assert.match(wire, /^CONNECT ssh\.example\.test:2222 HTTP\/1\.0\r\nHost: ssh\.example\.test\r\n/);
+  assert.match(wire, /User-Agent: Synthetic-SXB\/1\r\n\r\n$/);
+  assert.ok(pieces.at(-1).at - pieces[0].at >= 900, 'declared delay split must remain observable');
+  await stripRelayHttp(socket, new AbortController().signal);
+  assert.equal(socket.read(3).toString(), 'SSH');
+});
+
+test('cancellation during a delayed payload never sends its remaining bytes', { timeout: 5000 }, async t => {
+  const parts = [];
+  let sawFirst;
+  const first = new Promise(resolve => { sawFirst = resolve; });
+  const server = net.createServer(peer => {
+    peer.on('error', () => peer.destroy());
+    peer.on('data', bytes => { parts.push(bytes); sawFirst(); });
+  });
+  const socket = net.connect(await listen(server), '127.0.0.1');
+  socket.on('error', () => {});
+  t.after(async () => { socket.destroy(); await new Promise(resolve => server.close(resolve)); });
+  await once(socket, 'connect');
+  const controller = new AbortController();
+  const write = writeRelayPayload(socket, 'first[delay_split]must-not-be-sent', controller.signal);
+  await first;
+  controller.abort();
+  await assert.rejects(write, error => error.name === 'AbortError');
+  assert.equal(Buffer.concat(parts).toString(), 'first');
+});
+
+test('payload support never relaxes provider trust, private keys or unsupported rotation', () => {
+  const profile = { protocol: 'ssh+payload', host: 'provider.example.test', port: 22,
+    username: 'synthetic', privateKeyBase64: Buffer.from('synthetic-private-key').toString('base64'),
+    privateKeyPassphrase: 'synthetic-passphrase', fingerprint, payload: 'CONNECT [host_port] HTTP/1.1[crlf][split][crlf]' };
+  const upstream = relayUpstream(profile);
+  assert.equal(upstream.privateKey.toString(), 'synthetic-private-key');
+  assert.equal(upstream.passphrase, profile.privateKeyPassphrase);
+  assert.equal(upstream.username, profile.username);
+  assert.equal(upstream.fingerprint, fingerprint);
+  assert.throws(() => relayUpstream({ ...profile, fingerprint: undefined }), /UNVERIFIED/);
+  assert.throws(() => relayUpstream({ ...profile, insecure: true }), /UNSUPPORTED/);
+  assert.throws(() => relayUpstream({ ...profile, payload: '[rotate=first;second]' }), /PAYLOAD_UNSUPPORTED/);
+  assert.throws(() => sshPayloadChunks('head[split=invalid]tail'), /TOKEN_INVALID/);
+  assert.throws(() => sshPayloadChunks(Array.from({ length: 33 }, () => 'a').join('[split]')), /SPLIT_LIMIT/);
+});
 
 test('different activated clients share one provider without sharing the per-client connection limit', { timeout: 30000 }, async t => {
   const f = await fixture(t, { multipleClients: true });

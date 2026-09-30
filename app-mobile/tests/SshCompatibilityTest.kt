@@ -273,6 +273,12 @@ fun main(args: Array<String>) {
     check(sendSshPayload("a[split]b[delay_split]c", output) {} == 3)
     check(output.toString("ISO-8859-1") == "abc")
     check((System.nanoTime() - started) / 1_000_000 >= 900)
+    val http = expandSshPayloadTokens(
+        "[method] [ssh] [protocol][crlf]Host: [host_header][cr][lf]X-SNI: [sni][crlf]User-Agent: [ua][crlf][crlf]",
+        "ssh.example.test", 2222, "Synthetic-SXB/1", "tls.example.test",
+    )
+    check(http == "CONNECT ssh.example.test:2222 HTTP/1.0\r\nHost: ssh.example.test\r\n" +
+        "X-SNI: tls.example.test\r\nUser-Agent: Synthetic-SXB/1\r\n\r\n")
     val pair = com.jcraft.jsch.KeyPair.genKeyPair(JSch(), com.jcraft.jsch.KeyPair.RSA, 2048)
     try {
         for (passphrase in listOf("", "synthetic-key-passphrase")) {

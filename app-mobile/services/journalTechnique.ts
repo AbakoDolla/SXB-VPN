@@ -320,6 +320,8 @@ const ERREURS_VPN = new Map([
   ['AUTH_FAILED', 'log_auth_failed'],
   ['TCP_TIMEOUT', 'log_timeout'],
   ['TLS_TIMEOUT', 'log_timeout'],
+  ['VPN_PERMISSION_REQUIRED', 'step_permission_denied'],
+  ['BACKEND_PIN_MISMATCH', 'log_backend_identity_failed'],
   ['SSH_TIMEOUT', 'log_timeout'],
   ['SSH_BANNER_MISSING', 'log_handshake_failed'],
   ['TUNNEL_REFUSED', 'log_refused'],
@@ -341,6 +343,7 @@ const CODES_VPN = new Set([
   'VPN_FAILED', 'VPN_TUN_FAILED', 'CONFIG_INVALID', 'CONFIG_UNSUPPORTED',
   'TLS_FAILED', 'HTTP_UNEXPECTED', 'TRANSPORT_ERROR', 'SSH_MODE_UNKNOWN',
   'PRIVACY_CONSENT_REQUIRED', 'USAGE_CHECKPOINT_UNAVAILABLE',
+  'VPN_PERMISSION_STORAGE_FAILED',
 ]);
 
 /** L'état natif reste exploitable même si aucune ligne de journal n'arrive. */

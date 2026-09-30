@@ -216,7 +216,7 @@ describe('le harnais prouve le chemin réel, pas une approximation', () => {
     const fixture = lire('scripts/tests/xray-runtime-fixture.mjs');
     // Vérifier la sortie du seul générateur prouverait quelque chose que
     // l'application n'exécute jamais : elle traduit toujours avant de démarrer.
-    assert.match(fixture, /SxbEngineSchema\.moderniser\(JSONObject\(buildRawSingBoxConfig\(config\)\)\)/);
+    assert.match(fixture, /SxbEngineSchema\.moderniser\(JSONObject\(\s*if \(config\.optString\("protocol"\) == "vless"\) buildSingBoxConfig\(config, "vless"\)\s*else buildRawSingBoxConfig\(config\)\s*\)\)/);
     assert.match(fixture, /import com\.sxbvpn\.vpnmodule\.SxbEngineSchema/);
 
     const portes = lire('scripts/run-android-policy-gates.sh');
@@ -225,6 +225,7 @@ describe('le harnais prouve le chemin réel, pas une approximation', () => {
     assert.match(portes, /singbox-engine-check build/);
     assert.match(portes, /"\$HARNESS\/engine-check" "\$HARNESS\/xray\/runtime\.json"/);
     assert.match(portes, /"\$HARNESS\/engine-check" "\$runtime"/);
+    assert.match(portes, /xray-runtime-fixture\.mjs --check-parity "\$HARNESS\/xray"/);
   });
 
   it('exécute les preuves Kotlin du module', () => {

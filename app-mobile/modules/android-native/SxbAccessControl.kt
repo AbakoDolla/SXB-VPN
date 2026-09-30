@@ -147,6 +147,7 @@ object SxbAccessControl {
         check(SxbPrivacyPolicy.vpnAllowed(context)) { "PRIVACY_CONSENT_REQUIRED" }
         load(context)
         check(!signedOut && !storageFailed) { "ACCESS_SESSION_REQUIRED" }
+        SxbVpnPermission.checkStart(context, config)
         val denied = prefs(context)
         check(config.optString("securitySessionId", "") != denied.getString("securityRevokedSession", null) ||
             config.optInt("securityGeneration") != denied.getInt("securityRevokedGeneration", -1)) { "SECURITY_SESSION_REVOKED" }
@@ -163,6 +164,7 @@ object SxbAccessControl {
 
     @Synchronized
     fun prepareStart(context: Context, config: JSONObject): String {
+        SxbVpnPermission.stamp(context, config)
         checkStart(context, config, checkAttempt = false)
         allowedAttempt = UUID.randomUUID().toString()
         check(prefs(context).edit().putString("attempt", allowedAttempt).commit()) { "ACCESS_STORAGE_ERROR" }
@@ -173,6 +175,18 @@ object SxbAccessControl {
     fun cancelStarts(context: Context) {
         allowedAttempt = null
         check(prefs(context).edit().remove("attempt").commit()) { "ACCESS_STORAGE_ERROR" }
+    }
+
+    @Synchronized
+    fun acknowledgeVpnPermission(context: Context) {
+        SxbVpnPermission.acknowledge(context)
+    }
+
+    @Synchronized
+    fun revokeVpnPermission(context: Context, config: JSONObject?): Boolean {
+        if (!SxbVpnPermission.revoke(context, config)) return false
+        cancelStarts(context)
+        return true
     }
 
     @Synchronized

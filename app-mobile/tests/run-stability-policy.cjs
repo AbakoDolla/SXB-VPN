@@ -8,6 +8,11 @@ const jsonJar = process.env.SXB_JSON_JAR;
 assert.ok(jsonJar && existsSync(jsonJar), 'Set SXB_JSON_JAR to the real org.json JVM jar');
 const temp = mkdtempSync(path.join(__dirname, '.stability-policy-'));
 function run(command, args) {
+  if (process.platform === 'win32' && command === process.env.KOTLINC && command.endsWith('.bat')) {
+    const home = path.resolve(path.dirname(command), '..');
+    return run(process.env.JAVA || 'java', [`-Dkotlin.home=${home}`, '-cp', path.join(home, 'lib', '*'),
+      'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', ...args]);
+  }
   const result = spawnSync(command, args, { stdio: 'inherit', shell: false });
   if (result.error) throw result.error;
   assert.equal(result.status, 0, `${command} failed`);

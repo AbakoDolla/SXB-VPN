@@ -69,6 +69,7 @@ test('the two VLESS chains preserve all eleven HTTP definitions without inventin
       assert.deepEqual(outbound.tls, {
         enabled: true, server_name: 'tls.example.test', insecure: true,
         utls: { enabled: true, fingerprint: 'chrome' },
+        alpn: ['http/1.1'],
       });
     } else if (source.protocol === 'http') {
       assert.equal(outbound.server, source.settings.servers[0].address);
@@ -221,6 +222,7 @@ test('HTTP detours use one translation regardless of source order and keep authe
   assert.equal(first.username, 'fixture-user');
   assert.equal(first.password, 'fixture-password-canary');
   assert.equal(first.tls.insecure, false);
+  assert.equal(first.tls.utls, undefined, 'VLESS defaults must not change the physical HTTP proxy');
 });
 
 test('missing, non-HTTP, cyclic and malformed upstreams cannot become invented endpoints', () => {
