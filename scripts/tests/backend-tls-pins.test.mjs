@@ -23,6 +23,10 @@ test('TLS pin inspection selects one exact TLS site and its public certificate o
   assert.throws(() => tlsLayout(site + site, blocks), /AMBIGUOUS/);
   assert.throws(() => tlsLayout(site.replace('/fullchain.pem', '/../../secret'), blocks), /LAYOUT_UNSUPPORTED/);
   assert.throws(() => tlsLayout(site.replace('listen 443 ssl', 'listen 443'), blocks), /SITE_AMBIGUOUS/);
+  for (const name of ['vpnsxb.afrihall.com.evil.test', 'prefix-vpnsxb.afrihall.com', 'not-vpnsxb.afrihall.com']) {
+    assert.throws(() => tlsLayout(site.replaceAll('server_name vpnsxb.afrihall.com', `server_name ${name}`), blocks),
+      /SITE_AMBIGUOUS/);
+  }
 });
 
 test('SPKI pins are deterministic public-key identities, not certificate serials', () => {

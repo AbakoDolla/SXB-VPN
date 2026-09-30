@@ -13,7 +13,8 @@ function tlsLayout(source, parseBlocks) {
   const servers = [];
   const visit = node => {
     if (node.words?.[0] === 'server' &&
-        node.children.some(child => child.words[0] === 'server_name' && child.words.slice(1).includes(HOST)) &&
+        node.children.some(child => child.words[0] === 'server_name' &&
+          child.words.slice(1).some(serverName => serverName === HOST)) &&
         node.children.some(child => child.words[0] === 'listen' && child.words.includes('ssl'))) servers.push(node);
     node.children.forEach(visit);
   };
