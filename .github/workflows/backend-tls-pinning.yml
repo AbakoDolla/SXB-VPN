@@ -1,0 +1,73 @@
+name: Prepare reviewed backend TLS pinning
+run-name: TLS pins ${{ inputs.mode }} — ${{ inputs.operation_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [inspect, prepare]
+        default: inspect
+        required: true
+      expected_pin:
+        type: string
+        description: Exact current public SPKI pin returned by inspect
+      renewal_revision:
+        type: string
+        description: Exact renewal revision returned by inspect
+      confirmed:
+        type: boolean
+        default: false
+        description: Approve stable renewal-key policy and creation of a root-owned backup key, without switching TLS
+      operation_id:
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: deploiement-production
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Require reviewed main for production preparation
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::TLS preparation requires the reviewed main revision."
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Encode exact reviewed operator
+        run: |
+          set -euo pipefail
+          node <<'ENCODE'
+          const fs = require('node:fs');
+          const { blocks } = require('./scripts/configure-ssh-relay-nginx.cjs');
+          const source = blocks.toString() + '\n' + fs.readFileSync('scripts/backend-tls-pins.cjs', 'utf8');
+          fs.appendFileSync(process.env.GITHUB_ENV, `SXB_TLS_PIN_INSPECTOR=${Buffer.from(source).toString('base64')}\n`);
+          ENCODE
+      - name: Prepare TLS trust without private key export or service restart
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        env:
+          SXB_TLS_PIN_MODE: ${{ inputs.mode }}
+          SXB_TLS_PIN_EXPECTED: ${{ inputs.expected_pin }}
+          SXB_TLS_PIN_REVISION: ${{ inputs.renewal_revision }}
+          SXB_TLS_PIN_CONFIRMED: ${{ inputs.confirmed }}
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
+          timeout: 30s
+          command_timeout: 90s
+          envs: SXB_TLS_PIN_INSPECTOR,SXB_TLS_PIN_MODE,SXB_TLS_PIN_EXPECTED,SXB_TLS_PIN_REVISION,SXB_TLS_PIN_CONFIRMED
+          script: |
+            set +x
+            set -euo pipefail
+            export NODE_OPTIONS= NODE_PATH=
+            cd /var/www/sxb-vpn
+            printf '%s' "$SXB_TLS_PIN_INSPECTOR" | base64 --decode | timeout 70s node
