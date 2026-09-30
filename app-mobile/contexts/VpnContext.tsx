@@ -1995,9 +1995,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           addStepLog('permission', 'step_permission_check', 'active');
           addLog('🔐 Demande de permission VPN...');
         }
-        // This local UI acknowledgement clears only a previous VPN-permission
-        // loss, never an account/profile restriction. Native retries do not call it.
-        const granted = await SxbVpnNative.requestVpnPermission();
+        const granted = hasPerm || await SxbVpnNative.requestVpnPermission();
         if (!granted) {
           addStepLog('permission', 'step_permission_denied', 'error');
           addLog('❌ Permission VPN refusée');
@@ -2279,7 +2277,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const issue = accessIssueFromError(err);
       const code = issue?.code || (err instanceof ProvisioningError ? err.diagnostic.code
         : isAxiosError(err) ? toProvisioningError(err, 1).diagnostic.code
-        : ['VPN_PERMISSION_REQUIRED', 'VPN_PERMISSION_STORAGE_FAILED'].includes(err?.code) ? err.code : undefined);
+        : err?.code === 'VPN_PERMISSION_REQUIRED' ? err.code : undefined);
       const messageKey = code === 'RELAY_CLIENT_UPDATE_REQUIRED' ? 'ssh_update_required'
         : code === 'RELAY_BOUND_SESSION_REQUIRED' ? 'ssh_activation_required'
         : code === 'RELAY_PROFILE_NOT_READY' ? 'ssh_profile_not_ready'

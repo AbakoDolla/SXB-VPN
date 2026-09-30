@@ -43,7 +43,7 @@ async function rollout(db, options) {
   const next = {
     id: current?.id || randomUUID(), versionCode: options.build.versionCode, versionName: options.build.versionName,
     apkUrl: APK_URL, apkSha256: options.build.apkSha256,
-    notes: 'Confiance TLS vérifiée, arrêt sûr après retrait de l’autorisation VPN et correctifs des imports SSH/payload et VLESS JSON.',
+    notes: 'Connexion simplifiée sans verrou TLS supplémentaire, arrêt immédiat lorsqu’un autre VPN prend la place et correctifs SSH/payload et VLESS JSON conservés.',
     minSupportedCode: 0, forceUpdate: false, active: true,
     targetRoles: current?.targetRoles ?? ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
     targetDeviceIds: [], publishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),

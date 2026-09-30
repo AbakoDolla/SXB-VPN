@@ -160,7 +160,6 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             check(SxbPrivacyPolicy.vpnAllowed(ctx)) { "PRIVACY_CONSENT_REQUIRED" }
             val vpnIntent = VpnService.prepare(ctx)
             if (vpnIntent == null) {
-                SxbAccessControl.acknowledgeVpnPermission(ctx)
                 promise.resolve(true)
                 return
             }
@@ -171,7 +170,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             vpnPermissionPromise = promise
             activity.startActivityForResult(vpnIntent, VPN_REQUEST_CODE)
         } catch (e: Exception) {
-            val code = e.message?.takeIf { it in setOf("VPN_PERMISSION_REQUIRED", "VPN_PERMISSION_STORAGE_FAILED") }
+            val code = e.message?.takeIf { it == "VPN_PERMISSION_REQUIRED" }
                 ?: "PERMISSION_ERROR"
             promise.reject(code, e.message ?: "Erreur permission VPN", e)
         }
@@ -181,10 +180,9 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         if (requestCode == VPN_REQUEST_CODE) {
             try {
                 val granted = resultCode == Activity.RESULT_OK && VpnService.prepare(reactApplicationContext) == null
-                if (granted) SxbAccessControl.acknowledgeVpnPermission(reactApplicationContext)
                 vpnPermissionPromise?.resolve(granted)
             } catch (error: Exception) {
-                vpnPermissionPromise?.reject("VPN_PERMISSION_STORAGE_FAILED", "VPN permission state could not be persisted", error)
+                vpnPermissionPromise?.reject("PERMISSION_ERROR", "VPN permission could not be confirmed", error)
             } finally {
                 vpnPermissionPromise = null
             }
@@ -240,7 +238,10 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             check(SxbPrivacyPolicy.vpnAllowed(ctx)) { "PRIVACY_CONSENT_REQUIRED" }
             val opts = org.json.JSONObject(optionsJson)
             val proto = opts.optString("protocol", "").lowercase()
-            if (SxbVpnService.getCurrentState() != "disconnected") SxbVpnService.instance?.stopForAccess()
+            val previous = SxbVpnService.instance
+            if (SxbVpnService.getCurrentState() != "disconnected" || previous?.hasTunnelResources() == true) {
+                previous?.stopForAccess()
+            }
             val guardedOptions = SxbAccessControl.prepareStart(ctx, opts)
 
             SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.MODULE_CALLED)
@@ -303,7 +304,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
         } catch (e: Exception) {
             SxbSecureLogger.error(SxbSecureLogger.VpnEvent.MODULE_REJECTED, e)
-            val code = e.message?.takeIf { it in setOf("VPN_PERMISSION_REQUIRED", "VPN_PERMISSION_STORAGE_FAILED") }
+            val code = e.message?.takeIf { it == "VPN_PERMISSION_REQUIRED" }
                 ?: "START_ERROR"
             promise.reject(code, e.message ?: "Erreur démarrage VPN", e)
         }

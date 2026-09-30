@@ -211,8 +211,8 @@ Requirements before opting in a profile:
   configuration is backed up, checked with `nginx -t` and restored on rejection.
   An ambiguous/conflicting vhost requires manual review; it is not guessed.
 
-The mobile opens a protected, hostname-verified TLS socket with reviewed
-current and backup SPKI pins, then requests an authenticated HTTP Upgrade. Its
+The mobile opens a protected TLS socket using normal platform certificate-chain
+and hostname verification, then requests an authenticated HTTP Upgrade. Its
 ticket has a distinct signing key derivation/audience and is unusable without
 a fresh device proof and an immutable connection binding. Internal SSH offers
 only forwarding, never shell, exec or SFTP. Supplier fingerprint verification
@@ -235,21 +235,20 @@ to correct it. Client runtime normalization repairs only absent/default fields.
 
 Gateway TLS negotiation offers TLS 1.3 and TLS 1.2 only. A silent handshake
 timeout can retry once on a fresh protected socket with TLS 1.2, still against
-the same compiled origin and with the same certificate, hostname and optional
-SPKI-pin validation. Certificate failures, HTTP refusals and cancellation do
+the same compiled origin and with the same certificate and hostname
+validation. Certificate failures, HTTP refusals and cancellation do
 not authorize a compatibility retry. Both attempts, including the second TCP
 dial, share the existing 20-second TLS budget. The journal distinguishes the
 compatible retry and `TLS_TIMEOUT` from a TCP timeout. This can recover a
 version-sensitive TLS path; it does not make an operator-blocked gateway
 reachable or authorize a different hostname.
 
-Backend pins are public-key hashes, not secrets and not replacements for normal
-certificate-chain or hostname validation. `app-mobile/security/backend-pins.json`
-is the reviewed source used by the Expo plugin. Release builds require two distinct
-keys and apply the same policy to the React API client, the native access observer
-and gateway sockets. Empty/duplicate/invalid required policies fail closed.
-The APK publication gate independently verifies that the live certificate's
-public key matches the compiled policy before replacing the public download.
+At the owner's request, the extra client SPKI allowlist introduced in APK 185
+has been removed from the React API client, native access observer and gateway.
+Ordinary platform TLS verification remains enabled; no trust-all manager or
+hostname bypass replaces it. The Expo plugin also removes old pin metadata and
+removed policy sources during incremental prebuilds. Publication still checks
+the backend's compatible offline-bootstrap capability over verified HTTPS.
 
 The manual `backend-tls-pinning.yml` operator inspects the exact TLS vhost and
 renewal configuration, then prepares a stable renewal key and an independent
@@ -257,20 +256,27 @@ root-owned backup only after explicit confirmation with the exact public pin
 and renewal revision. Preparation does not replace the live certificate or
 restart services. It retains a root-only pre-edit renewal backup and refuses
 conflicting `new_key` policy or ambiguous vhosts. The backup private key stays
-on the VPS. Before deliberately rotating TLS keys, issue and validate a normal
-CA certificate for the prepared key, publish the next backup pin to clients
-with sufficient overlap, and coordinate the rotation; do not bypass a pin failure.
+on the VPS. This maintenance tool does not enable pinning in the simplified
+client. Before deliberately rotating TLS keys, issue and validate a normal CA
+certificate, and consider older installed APK 185 clients that still pin the
+current/backup keys. Removing client pinning does not change the live certificate.
 
 Loss of Android VPN permission is different from radio loss. It now closes
 pending SSH/gateway sockets and cancels native recovery synchronously, before
-the UI thread can lag. A durable local permission generation prevents process
-restart or an old worker from clearing the stop. Only the UI's explicit permission
-request can acknowledge the new generation, and account/profile restrictions
-are checked separately. JavaScript receives `VPN_PERMISSION_REQUIRED` and drops
-old auto-connect/presentation intents. A delayed revoke cannot stop a newly granted
-generation. Normal cellular reconnects retain their current generation and
-do not require an Internet preflight. Permission-storage failures stop safely
-instead of silently permitting another start.
+the UI thread can lag. The native state becomes disconnected immediately, and
+the existing access-attempt cancellation prevents a stale worker from restarting.
+The separate APK 185 permission-generation file is no longer consulted: old
+stored blocks cannot lock out a new connection. A normal Android permission
+grant and the existing account/profile checks are sufficient to start again.
+JavaScript receives `VPN_PERMISSION_REQUIRED` and drops old auto-connect and
+presentation intents. A delayed revoke cannot stop a new start command.
+Normal cellular reconnects reuse their valid attempt without an Internet
+preflight or additional permission-generation acknowledgement.
+
+Android allows one VPN service per user/profile. If another service, including
+PCAPdroid in VPN mode, replaces SXB, Android revokes SXB and this shutdown path
+runs. This does not detect or prevent PCAPdroid's root capture mode, a rooted
+process capturing traffic without replacing the VPN, or a VPN in another user.
 
 Tickets last at most seven days, bounded by the activation session and initial
 configuration validity. Background observation renews a near-expired ticket

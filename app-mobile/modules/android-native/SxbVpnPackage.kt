@@ -7,7 +7,6 @@ import com.facebook.react.uimanager.ViewManager
 
 class SxbVpnPackage : ReactPackage {
     override fun createNativeModules(ctx: ReactApplicationContext): List<NativeModule> {
-        SxbBackendTls.install(ctx)
         return listOf(SxbVpnModule(ctx))
     }
 

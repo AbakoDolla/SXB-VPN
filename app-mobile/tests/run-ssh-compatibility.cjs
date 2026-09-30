@@ -107,29 +107,28 @@ object Base64 {
 `);
   const jar = path.join(temp, 'ssh-compat.jar');
   const androidContext = path.join(temp, 'Context.kt');
-  writeFileSync(androidContext, 'package android.content\nopen class Context\n');
+  writeFileSync(androidContext, `package android.content
+open class Context {
+ val packageName = "synthetic.sxb"
+ val packageManager = android.content.pm.PackageManager()
+}
+`);
+  const androidPackageManager = path.join(temp, 'PackageManager.kt');
+  writeFileSync(androidPackageManager, `package android.content.pm
+class Metadata {
+ fun getString(name: String): String? =
+  if (name == "com.sxbvpn.api_base_url") System.getProperty("sxb.test.gateway.url") else null
+}
+class ApplicationInfo { val metaData = Metadata() }
+class PackageManager {
+ companion object { const val GET_META_DATA = 128 }
+ fun getApplicationInfo(name: String, flags: Int) = ApplicationInfo()
+}
+`);
   const gatewayDependencies = path.join(temp, 'GatewayDependencies.kt');
   writeFileSync(gatewayDependencies, `package com.sxbvpn.vpnmodule
 import android.content.Context
 import org.json.JSONObject
-object SxbBackendTls {
- fun base(context: Context): String = System.getProperty("sxb.test.gateway.url")
- fun socketFactory(context: Context): javax.net.ssl.SSLSocketFactory {
-  if (System.getProperty("sxb.test.reject-pin") != "true") return javax.net.ssl.SSLSocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory
-  val managers = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm())
-  managers.init(null as java.security.KeyStore?)
-  val standard = managers.trustManagers.filterIsInstance<javax.net.ssl.X509TrustManager>().single()
-  val pinned = object : javax.net.ssl.X509TrustManager {
-   override fun getAcceptedIssuers() = standard.acceptedIssuers
-   override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, auth: String) = standard.checkClientTrusted(chain, auth)
-   override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, auth: String) {
-    standard.checkServerTrusted(chain, auth)
-    throw java.security.cert.CertificateException("BACKEND_PIN_MISMATCH")
-   }
-  }
-  return javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, arrayOf(pinned), null) }.socketFactory
- }
-}
 object SxbDeviceProof {
  var calls = 0
  fun headers(context: Context, method: String, url: String, body: String, credential: String): JSONObject {
@@ -141,8 +140,9 @@ object SxbDeviceProof {
 }
 `);
   const classpath = `${jsonJar}${path.delimiter}${jschJar}`;
-  run(process.env.KOTLINC || 'kotlinc', [harness, base64, androidContext, gatewayDependencies,
+  run(process.env.KOTLINC || 'kotlinc', [harness, base64, androidContext, androidPackageManager, gatewayDependencies,
     path.join(__dirname, 'SshGatewayTest.kt'),
+    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbBackendTls.kt'),
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbGatewaySocketFactory.kt'),
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbUdpGateway.kt'),
     '-classpath', classpath, '-include-runtime', '-d', jar]);

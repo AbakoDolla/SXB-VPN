@@ -1,5 +1,18 @@
 # Rapport A-T : couche de securite additive SXB VPN
 
+**Etat courant, retrait demande le 30 septembre 2026 :** le pinning client
+obligatoire et la generation locale de permission ajoutes dans APK 185 sont
+retires. Les chemins API, observateur et passerelle utilisent la validation TLS
+normale de la plateforme. Le retrait de permission par Android coupe toujours
+immediatement le TUN et les sockets SSH/passerelle, desarme la reconnexion et
+annule les anciennes tentatives ; il ne cree plus de blocage de permission
+persistant distinct. Un nouveau depart suit l'autorisation Android normale.
+Les droits, quotas, preuve appareil, secrets fournisseur serveur et correctifs
+de demarrage sans Internet prealable restent en place.
+PCAPdroid en mode VPN remplace le VPN actif ; sa capture root sans remplacement
+ne peut pas etre assimilee a ce signal. Les sections ci-dessous constituent le
+rapport historique, pas une revendication de pinning dans le client simplifie.
+
 Base conservee : `5ba8f701eff6d560c6a95aff1e07cb0119ee582d`, branche
 `princeevanceabah-pixel-compatibilite-du-paquet-protocoles` (PR #89), incluant
 la stabilite de PR #88. Implementation initiale revue :
