@@ -5,10 +5,51 @@ import {
   parseImportedConfig,
   parseImportedConfigList,
   validateTransportCoherence,
+  canonicalJson, encryptCanonical, decryptCanonical, engineConfigFromCanonical,
 } from "../services/canonical-config";
 import { substitutePayload } from "../services/transport-probe";
+import { relayUpstream } from "../services/ssh-relay-transport";
 
 describe("imports et transports de la gamme SSH", () => {
+  it("transmet l'identité SSH et le payload déclaré jusqu'au relais privé après stockage chiffré", () => {
+    const previousKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = "synthetic-ssh-fidelity-key";
+    try {
+      const payload = "[method] [ssh] [protocol][crlf]Host: [host][cr][lf]X-SNI: [sni][crlf]" +
+        "User-Agent: [ua][crlf][split]X-Phase: final[crlf][crlf]";
+      const imported = {
+        protocol: "ssh+payload", sshTransport: "http-connect", host: "ssh.example.test", port: 2222,
+        username: "synthetic-user", password: "synthetic-password", tls: true, sni: "tls.example.test",
+        proxyEnabled: true, proxyHost: "proxy.example.test", proxyPort: 443,
+        fingerprint: "SHA256:" + Buffer.alloc(32, 1).toString("base64").replace(/=+$/, ""),
+        payload, userAgent: "Synthetic-SXB/1",
+      };
+      const parsed = parseImportedConfig(JSON.stringify(imported));
+      assert.equal(parsed.ok, true, parsed.errors.join(" | "));
+      const stored = encryptCanonical(canonicalJson(parsed.canonical!));
+      assert.doesNotMatch(stored, /synthetic-password|ssh\.example\.test|\[split\]/);
+      const restored = JSON.parse(decryptCanonical(stored)!);
+      const engine = engineConfigFromCanonical(restored);
+      assert.equal(engine.payload, payload);
+      const upstream = relayUpstream(engine);
+      assert.equal(upstream.host, imported.host);
+      assert.equal(upstream.port, imported.port);
+      assert.equal(upstream.username, imported.username);
+      assert.equal(upstream.password, imported.password);
+      assert.equal(upstream.proxyHost, imported.proxyHost);
+      assert.equal(upstream.proxyPort, imported.proxyPort);
+      assert.equal(upstream.payload, payload);
+      const expanded = substitutePayload(payload, upstream.host, upstream.sni, upstream.port, "Synthetic-SXB/1");
+      assert.match(expanded, /^CONNECT ssh\.example\.test:2222 HTTP\/1\.0\r\n/);
+      assert.match(expanded, /User-Agent: Synthetic-SXB\/1\r\n/);
+      assert.match(expanded, /Host: ssh\.example\.test\r\n/);
+      assert.match(expanded, /X-SNI: tls\.example\.test\r\n/);
+    } finally {
+      if (previousKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = previousKey;
+    }
+  });
+
   it("conserve le transport explicite et le budget d'un export SSH Custom v92", () => {
     const payload = "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
       "X / HTTP/1.1[crlf]Host: [host][crlf][crlf]" +

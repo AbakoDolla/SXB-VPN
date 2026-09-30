@@ -57,6 +57,10 @@ object SxbTunnelPolicy {
     /** Transports qui négocient par un Upgrade HTTP, donc sans UDP. */
     private val upgradeTransports = setOf("ws", "httpupgrade")
 
+    fun tlsNameForEndpoint(server: String, httpHost: String = ""): String =
+        if (server.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")) || server.contains(':'))
+            httpHost.ifBlank { server } else server
+
     fun defaultProxyTag(outbounds: JSONArray, route: JSONObject?): String? {
         val items = (0 until outbounds.length()).mapNotNull { outbounds.optJSONObject(it) }
         val finalTag = route?.optString("final", "").orEmpty()
@@ -593,12 +597,29 @@ object SxbTunnelPolicy {
         }
 
         val tls = outbound.optJSONObject("tls")
+        if (outbound.optString("type", "") == "vless" && tls?.optBoolean("enabled", false) == true) {
+            if (tls.optString("server_name", "").isBlank() && !tls.optBoolean("disable_sni", false)) {
+                val headers = transport?.optJSONObject("headers")
+                val host = headers?.optString("Host", "")?.ifBlank { headers.optString("host", "") }
+                    ?: transport?.optString("host", "").orEmpty()
+                tls.put("server_name", tlsNameForEndpoint(outbound.optString("server"), host))
+                applied += "VLESS_TLS_NAME_DEFAULT"
+            }
+            if (!tls.has("utls")) {
+                tls.put("utls", JSONObject().put("enabled", true).put("fingerprint", "chrome"))
+                applied += "VLESS_TLS_FINGERPRINT_DEFAULT"
+            }
+        }
         if (tls != null && transportType in upgradeTransports) {
             val alpn = when (val raw = tls.opt("alpn")) {
                 is JSONArray -> (0 until raw.length()).map { raw.optString(it).trim() }
                 is String -> raw.split(',').map { it.trim() }
                 else -> emptyList()
             }.filter { it.isNotEmpty() }
+            if (alpn.isEmpty() && tls.optBoolean("enabled", false)) {
+                tls.put("alpn", JSONArray().put("http/1.1"))
+                applied += "UPGRADE_ALPN_HTTP1"
+            }
             val kept = alpn.filterNot { it.lowercase() in upgradeOnlyAlpn }
             if (kept.size != alpn.size) {
                 tls.put("alpn", JSONArray(kept.ifEmpty { listOf("http/1.1") }))
@@ -610,7 +631,7 @@ object SxbTunnelPolicy {
             val declared = utls.optString("fingerprint", "")
             val accepted = utlsFingerprint(declared)
             if (accepted.isEmpty() && declared.isNotBlank()) {
-                tls.remove("utls")
+                tls.put("utls", JSONObject().put("enabled", false))
                 applied += "UTLS_NATIVE"
             } else if (accepted.isNotEmpty() && accepted != declared) {
                 utls.put("fingerprint", accepted)

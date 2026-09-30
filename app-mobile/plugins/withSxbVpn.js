@@ -14,6 +14,7 @@ const { withAndroidManifest, withDangerousMod, withAppBuildGradle, withGradlePro
 const path = require('path');
 const fs   = require('fs');
 const { execFileSync } = require('child_process');
+const { pinsForOrigin } = require('../scripts/backend-pin-policy.cjs');
 
 // ── 1. Permissions + déclaration service dans AndroidManifest.xml ─────────────
 //
@@ -105,12 +106,9 @@ function withVpnManifest(config) {
       throw new Error('SXB access control requires a fixed HTTPS API origin');
     }
     setMetadata('com.sxbvpn.api_base_url', apiBase);
-    const pins = JSON.parse(process.env.EXPO_PUBLIC_BACKEND_SPKI_PINS || '[]');
-    if (!Array.isArray(pins) || pins.length > 8 ||
-        pins.some(pin => typeof pin !== 'string' || !/^sha256\/[A-Za-z0-9+/]{43}=$/.test(pin))) {
-      throw new Error('EXPO_PUBLIC_BACKEND_SPKI_PINS must contain reviewed SHA-256 SPKI pins');
-    }
+    const pins = pinsForOrigin(apiBase, process.env.EXPO_PUBLIC_BACKEND_SPKI_PINS);
     setMetadata('com.sxbvpn.BACKEND_SPKI_PINS', JSON.stringify(pins));
+    setMetadata('com.sxbvpn.BACKEND_SPKI_REQUIRED', 'true');
     const signers = (process.env.EXPO_PUBLIC_APK_SIGNERS ||
       '0140c97e6ba6e9bab0d0ce86935562fbdedd80a026de49642764c49dce56f726').split(',').map(value => value.trim().toLowerCase());
     if (!signers.length || signers.some(value => !/^[a-f0-9]{64}$/.test(value))) throw new Error('APK_SIGNERS_INVALID');

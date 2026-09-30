@@ -754,8 +754,9 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /put\("short_id", realityShortId\)/);
 
     // ALPN et nom de service gRPC : parsés côté backend ET consommés côté moteur.
-    assert.match(canonicalConfig, /out\.alpn = decodeURIComponent\(alpn\)/);
-    assert.match(canonicalConfig, /out\.grpcServiceName = decodeURIComponent\(serviceName\)/);
+    assert.match(canonicalConfig, /out\.alpn = alpn/);
+    assert.match(canonicalConfig, /out\.grpcServiceName = serviceName/);
+    assert.match(canonicalConfig, /new URLSearchParams\(raw \|\| ''\)/);
     assert.match(nativeService, /csvToJsonArray\(alpn\)\?\.let \{ put\("alpn", it\) \}/);
     assert.match(nativeService, /grpcServiceName/);
 
@@ -771,7 +772,7 @@ describe('garde-fous contre les régressions Android', () => {
     // §11 — trois valeurs distinctes qui doivent rester indépendantes.
     assert.match(nativeService, /val wsHost\s+= cfg\.optStringOrNull\("wsHost", sni\)/);
     assert.match(nativeService, /put\("headers", JSONObject\(\)\.put\("Host", host\)\)/);
-    assert.match(canonicalConfig, /out\.wsHost = decodeURIComponent\(host\)/);
+    assert.match(canonicalConfig, /out\.wsHost = host/);
   });
 
   it('ne déclare pas la connexion établie sur un outbound local', () => {
@@ -1001,7 +1002,8 @@ describe('garde-fous contre les régressions Android', () => {
   it('prend en charge le fingerprint uTLS (chrome, etc.) dans les configurations Xray converties', () => {
     assert.match(nativeService, /val fp = tlsObj\?\./);
     assert.match(nativeService, /put\("utls"/);
-    assert.match(nativeService, /put\("fingerprint", fp\)/);
+    assert.match(nativeService, /tlsObj\?\.optBoolean\("allowInsecure", false\) \?: false, fp, alpn/);
+    assert.match(nativeService, /put\("fingerprint", effectiveFingerprint\)/);
   });
 
   it('route les inboundTag Xray vers l’inbound TUN Android réel et préserve le detour HTTP', () => {
@@ -1170,7 +1172,13 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('réinitialise l’UI sur un événement natif disconnected même après un échec de tentative', () => {
-    assert.match(vpnContext, /s === 'disconnected'[\s\S]{0,260}setIsConnected\(false\)[\s\S]{0,120}setIsConnecting\(false\)/);
+    const start = vpnContext.indexOf("} else if (s === 'disconnected') {");
+    assert.ok(start > 0);
+    const disconnected = vpnContext.slice(start, vpnContext.indexOf("s === 'error'", start));
+    assert.match(disconnected, /setIsConnected\(false\)/);
+    assert.match(disconnected, /setIsConnecting\(false\)/);
+    assert.match(disconnected, /e\?\.errorCode === 'VPN_PERMISSION_REQUIRED'[\s\S]*pendingAutoConnectRef\.current = null/);
+    assert.match(disconnected, /\+\+connectionAttemptRef\.current/);
   });
 
   it('mesure les octets sur l’interface TUN et n’ajoute pas le relais SSH', () => {
@@ -1404,7 +1412,12 @@ describe('garde-fous contre les régressions Android', () => {
     // l'échec, ni plus tard au retour du réseau : la reconnexion est désarmée.
     assert.ok(nativeService.includes('code in PERMANENT_ERROR_CODES && ::autoReconnect.isInitialized'));
     assert.ok(nativeService.includes('autoReconnect.markStopped(code)'));
-    assert.ok(nativeService.includes('PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED", "USAGE_CHECKPOINT_UNAVAILABLE")'));
+    const permanent = nativeService.match(/PERMANENT_ERROR_CODES = setOf\([\s\S]*?\)/)?.[0];
+    assert.ok(permanent);
+    for (const code of ['CONFIG_INVALID', 'CONFIG_UNSUPPORTED', 'USAGE_CHECKPOINT_UNAVAILABLE',
+      'VPN_PERMISSION_REQUIRED', 'VPN_PERMISSION_STORAGE_FAILED', 'BACKEND_PIN_MISMATCH']) {
+      assert.ok(permanent.includes(`"${code}"`), code);
+    }
   });
 
   it('relance le tunnel au retour du réseau sans jamais brûler de tentative à vide', () => {

@@ -149,6 +149,7 @@ private fun expandSshPayloadTokens(
         "[lf]" to "\n",
         "[cr]" to "\r",
         "[host]" to targetHost,
+        "[host_header]" to targetHost,
         "[port]" to targetPort.toString(),
         "[ua]" to userAgent,
         "[sni]" to sni.ifBlank { targetHost },
@@ -1176,7 +1177,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
          * §30 — Erreurs définitives pour la configuration courante : réessayer
          * ne peut pas les corriger et noierait la cause réelle dans les logs.
          */
-        private val PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED", "USAGE_CHECKPOINT_UNAVAILABLE")
+        private val PERMANENT_ERROR_CODES = setOf(
+            "CONFIG_INVALID", "CONFIG_UNSUPPORTED", "USAGE_CHECKPOINT_UNAVAILABLE",
+            "VPN_PERMISSION_REQUIRED", "VPN_PERMISSION_STORAGE_FAILED", "BACKEND_PIN_MISMATCH",
+        )
 
         /**
          * Résolveur employé À TRAVERS le tunnel, quand le profil n'en impose pas.
@@ -1836,6 +1840,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
         if (android.net.VpnService.prepare(this) == null) return
         val revokedConfig = configJson
         val revokedStartId = derniereCommandeStartId
+        synchronized(SxbAccessControl) {
+            if (instance !== this || android.net.VpnService.prepare(this) == null ||
+                configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return
+            try {
+                val captured = if (revokedConfig.isNullOrBlank()) null else JSONObject(revokedConfig)
+                if (!SxbAccessControl.revokeVpnPermission(this, captured)) return
+            } catch (error: Exception) {
+                Log.e(TAG, "VPN_PERMISSION_STORAGE_FAILED", error)
+            }
+            if (::autoReconnect.isInitialized) autoReconnect.markStopped("system_vpn_revoke")
+            interruptForAccess()
+            runCatching { gatewaySocketFactory?.close() }
+            runCatching { sshSession?.disconnect() }
+            runCatching { socks5Server?.close() }
+        }
         android.os.Handler(android.os.Looper.getMainLooper()).post {
         SxbSecurityMonitor.record(this, "VPN_REVOKED", revokedConfig)
         // A delayed binder callback must not undo an explicit new permission grant.
@@ -1843,11 +1862,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return@post
         // Cancel the original attempt before workers can schedule another start.
         // Permission loss is not logout, account suspension or profile deletion.
-        if (::autoReconnect.isInitialized) autoReconnect.markStopped("system_vpn_revoke")
-        try { SxbAccessControl.cancelStarts(this) }
-        catch (error: Exception) { Log.e(TAG, "ACCESS_CANCEL_STARTS_FAILED", error) }
         broadcastLog("[SXB] ⚠️ VPN révoqué par le système")
-        broadcastStatus("disconnected")
+        broadcastStatus("disconnected", "VPN_PERMISSION_REQUIRED")
         cleanup()
         // Le système a repris la main sur l'interface VPN : ne pas la réinstaller.
         removeKillSwitchBlackhole()
@@ -2959,6 +2975,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             lower.contains("privacy_consent_required") -> "PRIVACY_CONSENT_REQUIRED"
             lower.contains("ssh_socket_protect_failed") -> "SSH_SOCKET_PROTECT_FAILED"
             lower.contains("ssh_relay_tls_timeout") -> "TLS_TIMEOUT"
+            lower.contains("vpn_permission_required") -> "VPN_PERMISSION_REQUIRED"
+            lower.contains("vpn_permission_storage_failed") -> "VPN_PERMISSION_STORAGE_FAILED"
+            lower.contains("backend_pin_mismatch") -> "BACKEND_PIN_MISMATCH"
             lower.contains("reject hostkey") || lower.contains("hostkey has been changed") ||
                 lower.contains("unknownhostkey") -> "SSH_HOST_KEY_FAILED"
             lower.contains("algorithm negotiation fail") -> "SSH_ALGORITHM_FAILED"
@@ -3409,12 +3428,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     /** Protège un `Socket` Java (utilisé par les tunnels SSH/JSch). */
     private fun protectSocket(socket: Socket): Boolean {
+        SxbAccessControl.checkStart(this, JSONObject(configJson))
+        check(running.get()) { "ACCESS_ATTEMPT_CANCELLED" }
         // protect() peut renvoyer false/échouer quand le TUN n'est pas encore créé
         // (ROMs strictes) : 3 tentatives espacées. Non bloquant à ce stade — avant
         // l'établissement du TUN, un socket non protégé ne peut pas boucler.
         var ok = false
         var attempt = 0
         while (!ok && attempt < 3) {
+            SxbAccessControl.checkStart(this, JSONObject(configJson))
+            check(running.get()) { "ACCESS_ATTEMPT_CANCELLED" }
             ok = runCatching { protect(socket) }.getOrDefault(false)
             if (!ok && attempt < 2) {
                 try { Thread.sleep(150) } catch (_: InterruptedException) {}
@@ -4400,26 +4423,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         if (stream != null) {
                             val security = stream.optString("security", "none")
                             if (security == "tls" || security == "reality") {
-                                val tlsObj = stream.optJSONObject("tlsSettings") ?: stream.optJSONObject("realitySettings")
+                                val tlsObj = stream.optJSONObject(if (security == "reality") "realitySettings" else "tlsSettings")
                                 val fp = tlsObj?.optString("fingerprint", "") ?: ""
-                                put("tls", JSONObject().apply {
-                                    put("enabled", true)
-                                    put("server_name", tlsObj?.optString("serverName", address) ?: address)
-                                    put("insecure", tlsObj?.optBoolean("allowInsecure", false) ?: false)
-                                    if (fp.isNotEmpty()) {
-                                        put("utls", JSONObject().apply {
-                                            put("enabled", true)
-                                            put("fingerprint", fp)
-                                        })
-                                    }
-                                    if (security == "reality") {
-                                        put("reality", JSONObject().apply {
-                                            put("enabled", true)
-                                            put("public_key", tlsObj?.optString("publicKey", ""))
-                                            put("short_id", tlsObj?.optString("shortId", ""))
-                                        })
-                                    }
-                                })
+                                val alpn = tlsObj?.optJSONArray("alpn")?.let { values ->
+                                    (0 until values.length()).joinToString(",") { values.getString(it) }
+                                }.orEmpty()
+                                val name = tlsObj?.optString("serverName", "").orEmpty()
+                                val header = stream.optJSONObject("wsSettings")?.optJSONObject("headers")
+                                    ?.optString("Host", "").orEmpty()
+                                    .ifBlank { stream.optJSONObject("httpupgradeSettings")?.optString("host", "").orEmpty() }
+                                put("tls", buildTlsObj(
+                                    name.ifBlank { SxbTunnelPolicy.tlsNameForEndpoint(address, header) }, true,
+                                    tlsObj?.optBoolean("allowInsecure", false) ?: false, fp, alpn,
+                                    if (security == "reality") tlsObj?.optString("publicKey", "").orEmpty() else "",
+                                    if (security == "reality") tlsObj?.optString("shortId", "").orEmpty() else "",
+                                ))
                             }
                             val network = stream.optString("network", "tcp")
                             if (network == "ws" || network == "websocket") {
@@ -4435,7 +4453,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
                                 val grpc = stream.optJSONObject("grpcSettings")
                                 put("transport", JSONObject().apply {
                                     put("type", "grpc")
-                                    put("service_name", grpc?.optString("serviceName", "GunService") ?: "GunService")
+                                    put("service_name", grpc?.optString("serviceName", "")?.ifBlank { "GunService" } ?: "GunService")
+                                })
+                            } else if (network == "httpupgrade") {
+                                val upgrade = stream.optJSONObject("httpupgradeSettings")
+                                put("transport", JSONObject().apply {
+                                    put("type", "httpupgrade")
+                                    put("path", upgrade?.optString("path", "/") ?: "/")
+                                    upgrade?.optString("host", "")?.takeIf { it.isNotBlank() }?.let { put("host", it) }
+                                    SxbTunnelPolicy.copyHeaders(upgrade?.optJSONObject("headers"))?.let { put("headers", it) }
                                 })
                             }
                         }
@@ -5245,6 +5271,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     put("enabled", true)
                     put("fingerprint", effectiveFingerprint)
                 })
+            } else if (enabled && refuseEmpreinte) {
+                put("utls", JSONObject().put("enabled", false))
             }
         }
     }

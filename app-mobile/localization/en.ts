@@ -19,6 +19,7 @@ export const en = {
   log_captive_portal: 'This network requires a sign-in (Wi-Fi portal).',
   log_dns_failed: 'The server cannot be found on this network.',
   log_timeout: 'The server did not answer in time.',
+  log_backend_identity_failed: 'The gateway identity could not be confirmed. Connection stopped.',
   log_refused: 'The server refused the connection.',
   log_handshake_failed: 'The server answered something unexpected.',
   log_no_network: 'No network available.',

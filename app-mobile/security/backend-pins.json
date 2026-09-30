@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "origin": "https://vpnsxb.afrihall.com/api",
+  "pins": [
+    "sha256/tKZTb0xKXfd8SpB0TZVb6A2I1aXrzNyEa9DUWmuR2/0=",
+    "sha256/sia0lf8YMC0iiEqFj9Y374iuwFCbi3p8W+YX1MMIFro="
+  ]
+}

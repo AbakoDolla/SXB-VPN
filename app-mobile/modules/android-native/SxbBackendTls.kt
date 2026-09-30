@@ -3,7 +3,6 @@ package com.sxbvpn.vpnmodule
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.http.X509TrustManagerExtensions
-import android.util.Base64
 import android.util.Log
 import com.facebook.react.modules.network.OkHttpClientFactory
 import com.facebook.react.modules.network.OkHttpClientProvider
@@ -11,18 +10,15 @@ import com.facebook.react.modules.network.NetworkingModule
 import com.facebook.react.modules.network.CustomClientBuilder
 import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
-import org.json.JSONArray
 import java.net.URI
 import java.security.KeyStore
-import java.security.MessageDigest
-import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 
-/** Optional public SPKI pins, compiled from reviewed rotation material. Normal TLS always applies. */
+/** Reviewed current and backup SPKI keys; old binaries retain normal TLS when not opted in. */
 object SxbBackendTls {
     fun socketFactory(context: Context): javax.net.ssl.SSLSocketFactory {
         val template = java.net.URL(base(context)).openConnection() as HttpsURLConnection
@@ -35,10 +31,9 @@ object SxbBackendTls {
     fun base(context: Context): String = metadata(context)?.getString("com.sxbvpn.api_base_url")
         ?: "https://vpnsxb.afrihall.com/api"
     private fun pins(context: Context): List<String> {
-        val values = JSONArray(metadata(context)?.getString("com.sxbvpn.BACKEND_SPKI_PINS") ?: "[]")
-        return (0 until values.length()).map { values.getString(it) }.also { result ->
-            require(result.all { Regex("sha256/[A-Za-z0-9+/]{43}=").matches(it) }) { "BACKEND_PINS_INVALID" }
-        }
+        val metadata = metadata(context)
+        return SxbTlsPinPolicy.parse(metadata?.getString("com.sxbvpn.BACKEND_SPKI_PINS") ?: "[]",
+            metadata?.getBoolean("com.sxbvpn.BACKEND_SPKI_REQUIRED", false) == true)
     }
 
     fun install(context: Context) {
@@ -78,10 +73,7 @@ object SxbBackendTls {
             override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
                 val verifiedChain = X509TrustManagerExtensions(standard)
                     .checkServerTrusted(chain, authType, connection.url.host)
-                if (verifiedChain.none { cert ->
-                    val digest = MessageDigest.getInstance("SHA-256").digest(cert.publicKey.encoded)
-                    "sha256/" + Base64.encodeToString(digest, Base64.NO_WRAP) in configured
-                }) throw CertificateException("BACKEND_PIN_MISMATCH")
+                SxbTlsPinPolicy.check(configured, verifiedChain.map { it.publicKey })
             }
         }
         connection.sslSocketFactory = SSLContext.getInstance("TLS").apply {

@@ -414,7 +414,7 @@ function applyCommonTransport(q: URLSearchParams, out: Record<string, any>): voi
   const security = (q.get('security') || '').toLowerCase();
   if (security) out.tls = security === 'tls' || security === 'reality';
   const sni = q.get('sni');
-  if (sni) out.sni = safeDecodeURIComponent(sni);
+  if (sni) out.sni = sni;
   // `type=` est la forme majoritaire, mais `network=` circule tout autant, et
   // l'analyseur de l'application accepte les deux. N'en lire qu'une produisait
   // ici un canonique SANS transport : le moteur retombait alors sur TCP, le
@@ -424,23 +424,23 @@ function applyCommonTransport(q: URLSearchParams, out: Record<string, any>): voi
   const type = (q.get('type') || q.get('network') || '').toLowerCase();
   if (type) out.network = type;
   const path = q.get('path');
-  if (path) out.path = decodeURIComponent(path);
+  if (path) out.path = path;
   const host = q.get('host');
-  if (host) out.wsHost = decodeURIComponent(host);
+  if (host) out.wsHost = host;
   const fp = q.get('fp');
   if (fp) out.fingerprint = fp;
   const insecure = q.get('allowInsecure') || q.get('insecure');
   if (insecure) out.insecure = boolParam(insecure);
   const flow = q.get('flow');
-  if (flow) out.flow = safeDecodeURIComponent(flow);
+  if (flow) out.flow = flow;
   // ALPN — imposé par certains serveurs (h2 seul). Il était ignoré, ce qui
   // faisait échouer le handshake TLS sans diagnostic exploitable.
   const alpn = q.get('alpn');
-  if (alpn) out.alpn = decodeURIComponent(alpn);
+  if (alpn) out.alpn = alpn;
   // gRPC — le nom de service est porté par `serviceName`, jamais par `path`.
   // Sans lui le moteur retombait sur `path`, donc sur un service inexistant.
   const serviceName = q.get('serviceName');
-  if (serviceName) out.grpcServiceName = decodeURIComponent(serviceName);
+  if (serviceName) out.grpcServiceName = serviceName;
   // Obfuscation d'en-tête TCP (`headerType=http`).
   const headerType = q.get('headerType');
   if (headerType && headerType.toLowerCase() !== 'none') out.headerType = headerType;
@@ -450,7 +450,7 @@ function applyCommonTransport(q: URLSearchParams, out: Record<string, any>): voi
   const sid = q.get('sid');
   if (sid) out.shortId = sid;
   const spx = q.get('spx');
-  if (spx) out.spiderX = decodeURIComponent(spx);
+  if (spx) out.spiderX = spx;
 }
 
 /**
@@ -626,7 +626,7 @@ function parseV2rayNProfile(obj: any, protocolHint: string | null, errors: strin
 
   if (network) cfg.network = network;
   const tlsValue = obj.tls ?? obj.streamSecurity ?? obj.security;
-  cfg.tls = tlsValue === true || String(tlsValue ?? '').toLowerCase() === 'tls';
+  cfg.tls = tlsValue === true || ['tls', 'reality'].includes(String(tlsValue ?? '').toLowerCase());
   const path = obj.path ?? obj.requestPath;
   if (path) cfg.path = safeDecodeURIComponent(String(path));
   const wsHost = obj.requestHost ?? obj.wsHost ?? ((obj.add || obj.address || obj.server) ? obj.host : undefined);
@@ -636,6 +636,10 @@ function parseV2rayNProfile(obj: any, protocolHint: string | null, errors: strin
   if (headerType && String(headerType).toLowerCase() !== 'none') cfg.headerType = String(headerType);
   const fp = obj.fp ?? obj.fingerprint;
   if (fp) cfg.fingerprint = String(fp);
+  for (const [alias, target] of [['pbk', 'publicKey'], ['sid', 'shortId'], ['spx', 'spiderX'], ['serviceName', 'grpcServiceName']]) {
+    const value = obj[target] ?? obj[alias];
+    if (value !== undefined) cfg[target] = String(value);
+  }
   if (obj.alpn) cfg.alpn = Array.isArray(obj.alpn) ? obj.alpn.map((v: any) => String(v)).join(',') : String(obj.alpn);
   return { cfg, name };
 }

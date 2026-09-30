@@ -1060,7 +1060,8 @@ fun main() {
             .put("type", "vless").put("tag", "proxy").put("server", "front.example.test").put("server_port", 443)
             .put("tls", JSONObject().put("enabled", true).put("server_name", "front.example.test").apply {
                 if (alpn != null) put("alpn", alpn)
-                if (fp != null) put("utls", JSONObject().put("enabled", true).put("fingerprint", fp))
+                else if (type in setOf("ws", "httpupgrade")) put("alpn", JSONArray().put("http/1.1"))
+                put("utls", JSONObject().put("enabled", true).put("fingerprint", fp ?: "chrome"))
             })
             .put("transport", JSONObject().put("type", type).put("path", path)
                 .put("headers", JSONObject().put("Host", "relay.example.test"))
@@ -1108,10 +1109,23 @@ fun main() {
         check(upper.getJSONObject("tls").getJSONObject("utls").getString("fingerprint") == "chrome")
         val native = vless("/", fp = "golang")
         check(SxbTunnelPolicy.normalizeStreamOutbound(native) == listOf("UTLS_NATIVE"))
-        check(!native.getJSONObject("tls").has("utls"))
+        check(!native.getJSONObject("tls").getJSONObject("utls").getBoolean("enabled"))
+        SxbTunnelPolicy.normalizeStreamOutbound(native)
+        check(!native.getJSONObject("tls").getJSONObject("utls").getBoolean("enabled"))
         val untouched = vless("/plain", alpn = JSONArray().put("http/1.1"), fp = "chrome")
         val before = untouched.toString()
         check(SxbTunnelPolicy.normalizeStreamOutbound(untouched).isEmpty() && untouched.toString() == before)
+        val defaults = vless("/")
+        defaults.getJSONObject("tls").apply { remove("server_name"); remove("utls"); remove("alpn") }
+        check(SxbTunnelPolicy.normalizeStreamOutbound(defaults) == listOf(
+            "VLESS_TLS_NAME_DEFAULT", "VLESS_TLS_FINGERPRINT_DEFAULT", "UPGRADE_ALPN_HTTP1",
+        ))
+        check(defaults.getJSONObject("tls").getString("server_name") == "front.example.test")
+        check(SxbTunnelPolicy.normalizeStreamOutbound(defaults).isEmpty())
+        val literal = vless("/").put("server", "203.0.113.12")
+        literal.getJSONObject("tls").remove("server_name")
+        SxbTunnelPolicy.normalizeStreamOutbound(literal)
+        check(literal.getJSONObject("tls").getString("server_name") == "relay.example.test")
 
         for (network in listOf("xhttp", "SplitHTTP", "kcp")) {
             try {

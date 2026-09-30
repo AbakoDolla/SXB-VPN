@@ -2,13 +2,15 @@ import net from 'node:net';
 import tls from 'node:tls';
 import dns from 'node:dns/promises';
 import { once } from 'node:events';
-import { substitutePayload } from './transport-probe';
+import { substitutePayload, sshPayloadChunks, writeSshPayload as writeRelayPayload } from './transport-probe';
+export { writeRelayPayload };
 
 export interface RelayUpstream {
   host: string; port: number; username: string; password?: string;
   privateKey?: Buffer; passphrase?: string; fingerprint: string;
   tls: boolean; sni: string; payload: string; proxyHost?: string; proxyPort?: number;
   udpHost?: string; udpPort?: number;
+  userAgent?: string;
 }
 
 export function publicRelayAddress(address: string): boolean {
@@ -37,10 +39,11 @@ export function relayUpstream(config: Record<string, unknown>): RelayUpstream {
     ['payload', 'payload-tls', 'http-connect'].includes(transport);
   const payload = text('payload');
   if (usePayload && (!payload || payload.length > 32768)) throw new Error('RELAY_PAYLOAD_REQUIRED');
-  // Do not reinterpret provider-specific rotating/split templates.
-  if (/\[(?:split|delay_split|rotate|random|method|protocol|ssh)[^\]]*\]/i.test(payload)) {
+  // Rotation depends on the originating client's state, unlike deterministic splits.
+  if (/\[(?:rotate|random)[^\]]*\]/i.test(payload)) {
     throw new Error('RELAY_PAYLOAD_UNSUPPORTED');
   }
+  if (usePayload && !sshPayloadChunks(payload).length) throw new Error('RELAY_PAYLOAD_REQUIRED');
   const proxy = config.proxyEnabled === true || /http-connect|proxy/.test(protocol) || transport === 'http-connect';
   const proxyHost = proxy ? text('proxyHost') || host : undefined;
   const proxyPort = proxy ? Number(config.proxyPort || port) : undefined;
@@ -61,6 +64,7 @@ export function relayUpstream(config: Record<string, unknown>): RelayUpstream {
     passphrase: text('privateKeyPassphrase') || undefined, fingerprint,
     tls: config.tls === true || config.tlsEnabled === true || /tls|ssl/.test(protocol) || /tls/.test(transport),
     sni: text('sni') || proxyHost || host, payload: usePayload ? payload : '', proxyHost, proxyPort,
+    userAgent: text('userAgent') || 'SXB-VPN/Android',
     ...(config.udpMode === 'udpgw' ? { udpHost: text('udpGatewayHost') || '127.0.0.1', udpPort } : {}),
   };
 }
@@ -90,10 +94,11 @@ export async function openRelayUpstream(config: RelayUpstream, signal: AbortSign
       await once(socket, 'secureConnect', { signal });
     }
     if (config.payload) {
-      const payload = substitutePayload(config.payload, config.host, config.sni, config.port);
-      const requestCount = payload.split('\r\n\r\n')
+      const payload = substitutePayload(config.payload, config.host, config.sni, config.port, config.userAgent);
+      const chunks = sshPayloadChunks(payload);
+      const requestCount = chunks.map(chunk => chunk.text).join('').split('\r\n\r\n')
         .filter(request => /^[A-Z]+\s+\S+\s+HTTP\/\d(?:\.\d)?$/i.test(request.split('\r\n')[0].trim())).length;
-      socket.write(payload);
+      await writeRelayPayload(socket, payload, signal);
       await stripRelayHttp(socket, signal, Math.max(1, requestCount));
     }
     clearTimeout(deadline);

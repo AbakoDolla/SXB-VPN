@@ -68,6 +68,8 @@ describe('faits techniques — ce que le journal doit enfin montrer', () => {
       ['AUTH_FAILED', 'log_auth_failed'],
       ['TCP_TIMEOUT', 'log_timeout'],
       ['TLS_TIMEOUT', 'log_timeout'],
+      ['VPN_PERMISSION_REQUIRED', 'step_permission_denied'],
+      ['BACKEND_PIN_MISMATCH', 'log_backend_identity_failed'],
       ['PLAY_ENCRYPTION_REQUIRED', 'privacy_encryption_error'],
     ]) {
       assert.deepEqual(analyserErreurVpn(code), { cle, code });

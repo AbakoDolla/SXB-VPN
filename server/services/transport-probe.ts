@@ -19,6 +19,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import dns from 'node:dns/promises';
 import crypto from 'node:crypto';
+import { setTimeout as pause } from 'node:timers/promises';
 
 export type ProbeEvent =
   | 'DNS_RESOLVED' | 'TCP_CONNECTED'
@@ -45,10 +46,16 @@ export interface ProbeReport {
 const DEF_TIMEOUT = 8000;
 
 // ── Substitution du payload (SSH+Payload) ────────────────────────────────────
-export function substitutePayload(template: string, host: string, sni?: string | null, port = 443): string {
+export function substitutePayload(
+  template: string, host: string, sni?: string | null, port = 443,
+  userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+): string {
   const tlsServerName = (sni && sni.trim()) || host;
   const random = crypto.randomBytes(6).toString('hex');
   return template
+    .replace(/\[method\]/gi, 'CONNECT')
+    .replace(/\[protocol\]/gi, 'HTTP/1.0')
+    .replace(/\[ssh\]/gi, `${host}:${port}`)
     .replace(/\[crlf\]/gi, '\r\n')
     .replace(/\[lfcr\]/gi, '\n\r')
     .replace(/\[lf\]/gi, '\n')
@@ -56,7 +63,7 @@ export function substitutePayload(template: string, host: string, sni?: string |
     .replace(/\[host_port\]/gi, `${host}:${port}`)
     .replace(/\[port\]/gi, String(port))
     .replace(/\[host\]/gi, host)
-    .replace(/\[ua\]/gi, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+    .replace(/\[ua\]/gi, userAgent)
     .replace(/\[host_header\]/gi, host)
     .replace(/\[sni\]/gi, tlsServerName)
     .replace(/%HOST%/gi, host)
@@ -64,6 +71,59 @@ export function substitutePayload(template: string, host: string, sni?: string |
     .replace(/%IP%/gi, host)
     .replace(/%PORT%/gi, String(port))
     .replace(/%RAND%/gi, random);
+}
+
+export function sshPayloadChunks(payload: string): Array<{ text: string; delayMs: number }> {
+  const directive = /\[(delay_split|instant_split|split)\]/gi;
+  const stripped = payload.replace(directive, '');
+  if (/\[(?:split|instant_split|delay_split)/i.test(stripped)) throw new Error('PAYLOAD_TOKEN_INVALID');
+  const chunks: Array<{ text: string; delayMs: number }> = [];
+  let offset = 0, delayMs = 0;
+  const append = (text: string) => {
+    if (!text) return;
+    chunks.push({ text, delayMs });
+    delayMs = 0;
+    if (chunks.length > 32) throw new Error('PAYLOAD_SPLIT_LIMIT');
+  };
+  for (const split of payload.matchAll(directive)) {
+    append(payload.slice(offset, split.index));
+    if (split[1].toLowerCase() === 'delay_split') delayMs = 1000;
+    offset = split.index! + split[0].length;
+  }
+  append(payload.slice(offset));
+  return chunks;
+}
+
+export async function writeSshPayload(socket: net.Socket, payload: string, signal: AbortSignal): Promise<number> {
+  const chunks = sshPayloadChunks(payload);
+  signal.throwIfAborted();
+  if (socket.destroyed) throw new Error('RELAY_PAYLOAD_CLOSED');
+  let failed!: (error: Error) => void;
+  const transportFailure = new Promise<never>((_, reject) => { failed = reject; });
+  const closed = () => failed(new Error('RELAY_PAYLOAD_CLOSED'));
+  socket.once('error', failed);
+  socket.once('close', closed);
+  const operation = (async () => {
+    let bytes = 0;
+    for (const chunk of chunks) {
+      signal.throwIfAborted();
+      if (socket.destroyed) throw new Error('RELAY_PAYLOAD_CLOSED');
+      if (chunk.delayMs) await pause(chunk.delayMs, undefined, { signal });
+      signal.throwIfAborted();
+      if (socket.destroyed) throw new Error('RELAY_PAYLOAD_CLOSED');
+      const encoded = Buffer.from(chunk.text, 'utf8');
+      await new Promise<void>((resolve, reject) => {
+        socket.write(encoded, error => error ? reject(error) : resolve());
+      });
+      bytes += encoded.length;
+    }
+    return bytes;
+  })();
+  try { return await Promise.race([operation, transportFailure]); }
+  finally {
+    socket.off('error', failed);
+    socket.off('close', closed);
+  }
 }
 
 // ── Lecture bornée d'un préfixe de flux ──────────────────────────────────────
@@ -167,7 +227,7 @@ async function probeWsTunnel(
     request = payload.replace(/(\r\n)(\r\n)/,
       `\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n$2`);
   }
-  sock.write(request);
+  await writeSshPayload(sock, request, AbortSignal.timeout(timeoutMs));
   const head = await readUpTo(sock, 8192, timeoutMs);
   const text = head.toString('latin1');
   const statusMatch = text.match(/^HTTP\/\d\.\d (\d{3})/);

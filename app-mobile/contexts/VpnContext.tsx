@@ -1095,6 +1095,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         refreshAccountState(activeConfigIdRef.current).catch(reportAccessSyncError);
         startTrafficPolling(); // S'assurer que le polling tourne
       } else if (s === 'disconnected') {
+        if (e?.errorCode === 'VPN_PERMISSION_REQUIRED') {
+          ++connectionAttemptRef.current;
+          pendingAutoConnectRef.current = null;
+          echelonRelanceRef.current = false;
+          basculeEnCoursRef.current = false;
+          addStepLog('permission', 'step_permission_denied', 'error', 'VPN_PERMISSION_REQUIRED');
+        }
         stopWatchdog();
         stopEchelon();
         setVpnState('disconnected');
@@ -1987,18 +1994,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           requireVpnConsent();
           addStepLog('permission', 'step_permission_check', 'active');
           addLog('🔐 Demande de permission VPN...');
-          const granted = await SxbVpnNative.requestVpnPermission();
-          if (!granted) {
-            addStepLog('permission', 'step_permission_denied', 'error');
-            addLog('❌ Permission VPN refusée');
-            setIsConnecting(false);
-            return;
-          }
-          addStepLog('permission', 'step_permission_granted', 'done');
-          addLog('✅ Permission VPN accordée');
-        } else {
-          addStepLog('permission', 'step_permission_granted', 'done');
         }
+        // This local UI acknowledgement clears only a previous VPN-permission
+        // loss, never an account/profile restriction. Native retries do not call it.
+        const granted = await SxbVpnNative.requestVpnPermission();
+        if (!granted) {
+          addStepLog('permission', 'step_permission_denied', 'error');
+          addLog('❌ Permission VPN refusée');
+          setIsConnecting(false);
+          return;
+        }
+        addStepLog('permission', 'step_permission_granted', 'done');
+        if (!hasPerm) addLog('✅ Permission VPN accordée');
 
         addStepLog('security', 'step_security_ok', 'done');
         addStepLog('config', 'step_loading_config', 'active');
@@ -2271,12 +2278,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       basculeEnCoursRef.current = false;
       const issue = accessIssueFromError(err);
       const code = issue?.code || (err instanceof ProvisioningError ? err.diagnostic.code
-        : isAxiosError(err) ? toProvisioningError(err, 1).diagnostic.code : undefined);
+        : isAxiosError(err) ? toProvisioningError(err, 1).diagnostic.code
+        : ['VPN_PERMISSION_REQUIRED', 'VPN_PERMISSION_STORAGE_FAILED'].includes(err?.code) ? err.code : undefined);
       const messageKey = code === 'RELAY_CLIENT_UPDATE_REQUIRED' ? 'ssh_update_required'
         : code === 'RELAY_BOUND_SESSION_REQUIRED' ? 'ssh_activation_required'
         : code === 'RELAY_PROFILE_NOT_READY' ? 'ssh_profile_not_ready'
         : code === 'CONFIG_EXHAUSTED' ? 'step_quota_exhausted'
         : code === 'CONFIG_EXPIRED' ? 'stop_profil_expire'
+        : code === 'VPN_PERMISSION_REQUIRED' ? 'step_permission_denied'
         : code === 'PVN_TIMEOUT' ? 'log_timeout'
         : code === 'PVN_NETWORK' ? 'network_error' : 'step_error';
       addStepLog('connection_error', messageKey, 'error', code);

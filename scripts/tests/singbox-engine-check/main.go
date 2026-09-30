@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"strings"
 
 	"github.com/sagernet/sing-box/common/geosite"
 	"github.com/sagernet/sing-box/experimental/libbox"
@@ -65,8 +64,8 @@ func check() error {
 		return fmt.Errorf("synthetic native outbounds are required")
 	}
 	for _, outbound := range config.Outbounds {
-		if outbound.Server != "" && !strings.HasSuffix(outbound.Server, ".example.test") {
-			return fmt.Errorf("only synthetic example.test endpoints are allowed; never supply a private provider export")
+		if outbound.Server != "" && !syntheticEndpoint(outbound.Server) {
+			return fmt.Errorf("only synthetic example.test or RFC 5737 endpoints are allowed; never supply a private provider export")
 		}
 	}
 	var domainReader *geosite.Reader

@@ -70,14 +70,18 @@ object Log {
 `);
   fixture('AndroidContext.kt', `package android.content
 class Preferences {
-  val values = mutableMapOf<String, String>()
+  val values = mutableMapOf<String, Any>()
   var failWrites = false
-  fun getString(key: String, fallback: String?): String? = values[key] ?: fallback
+  fun getString(key: String, fallback: String?): String? = values[key] as? String ?: fallback
+  fun getLong(key: String, fallback: Long): Long = values[key] as? Long ?: fallback
+  fun getBoolean(key: String, fallback: Boolean): Boolean = values[key] as? Boolean ?: fallback
   fun edit() = Editor(this)
 }
 class Editor(private val prefs: Preferences) {
-  private val next = mutableMapOf<String, String>()
+  private val next = mutableMapOf<String, Any>()
   fun putString(key: String, value: String): Editor { next[key] = value; return this }
+  fun putLong(key: String, value: Long): Editor { next[key] = value; return this }
+  fun putBoolean(key: String, value: Boolean): Editor { next[key] = value; return this }
   fun commit(): Boolean {
     if (prefs.failWrites) return false
     prefs.values.putAll(next); return true
@@ -85,10 +89,11 @@ class Editor(private val prefs: Preferences) {
 }
 open class Context {
   companion object { const val MODE_PRIVATE = 0 }
-  val storage = Preferences()
+  var preferences = mutableMapOf<String, Preferences>()
+  val storage get() = getSharedPreferences("sxb_security_events_v1", MODE_PRIVATE)
   var apiBase = "https://127.0.0.1/api"
   var permissionGranted = false
-  fun getSharedPreferences(name: String, mode: Int) = storage
+  fun getSharedPreferences(name: String, mode: Int) = preferences.getOrPut(name) { Preferences() }
 }
 `);
   fixture('AndroidNet.kt', `package android.net
@@ -110,10 +115,19 @@ class Handler(looper: Looper) { fun post(action: () -> Unit) { MainQueue.work.ad
   fixture('RuntimeHarness.kt', `package com.sxbvpn.vpnmodule
 import android.content.Context
 import android.util.Log
+import org.json.JSONObject
 // Identity transform is intentional: only queue behavior, not Keystore encryption, is under test.
 object KeystoreManager { fun encrypt(value: String) = value; fun decrypt(value: String) = value }
-object SxbAccessControl { fun cancelStarts(context: Context) { (context as RevokeHarness).cancelled++ } }
+object SxbAccessControl {
+  fun cancelStarts(context: Context) { (context as RevokeHarness).cancelled++ }
+  fun revokeVpnPermission(context: Context, config: JSONObject?): Boolean {
+    if (!SxbVpnPermission.revoke(context, config)) return false
+    cancelStarts(context)
+    return true
+  }
+}
 class Reconnector { val reasons = mutableListOf<String>(); fun markStopped(reason: String) { reasons.add(reason) } }
+class CloseableHarness { var closed = false; fun close() { closed = true }; fun disconnect() { closed = true } }
 class RevokeHarness : android.net.VpnService() {
   companion object { var instance: RevokeHarness? = null; const val TAG = "test" }
   var configJson: String? = null
@@ -122,11 +136,17 @@ class RevokeHarness : android.net.VpnService() {
   var cancelled = 0
   var cleaned = 0
   var blackholeRemoved = 0
+  var interrupted = 0
+  var gatewaySocketFactory: CloseableHarness? = CloseableHarness()
+  var sshSession: CloseableHarness? = CloseableHarness()
+  var socks5Server: CloseableHarness? = CloseableHarness()
   val statuses = mutableListOf<String>()
   init { instance = this; autoReconnect = Reconnector() }
   fun broadcastLog(value: String) {}
-  fun broadcastStatus(value: String) { statuses.add(value) }
+  fun broadcastStatus(value: String, code: String? = null) { statuses.add(value); errorCodes.add(code) }
+  val errorCodes = mutableListOf<String?>()
   fun cleanup() { cleaned++ }
+  fun interruptForAccess() { interrupted++ }
   fun removeKillSwitchBlackhole() { blackholeRemoved++ }
 ${revoke}
 }
@@ -135,6 +155,8 @@ ${revoke}
   run(process.env.KOTLINC || 'kotlinc', [
     ...generated,
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbSecurityMonitor.kt'),
+    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbVpnPermission.kt'),
+    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbTlsPinPolicy.kt'),
     path.resolve(__dirname, 'DeviceSecurityTest.kt'),
     '-classpath', jsonJar, '-include-runtime', '-d', jar,
   ]);
