@@ -78,7 +78,7 @@ function withRelayLocation(source, domain, port) {
   return source.slice(0, server.close) + `\n    ${location}\n` + source.slice(server.close);
 }
 
-module.exports = { withRelayLocation };
+module.exports = { withRelayLocation, blocks };
 if (require.main === module) {
   const [config, output] = process.argv.slice(2);
   if (!config || !output || path.resolve(config) === path.resolve(output)) throw new Error('Input and candidate paths required');
