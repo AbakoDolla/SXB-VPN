@@ -12,3 +12,5 @@ export function publicRootAuthority(secret: string | undefined): {
   publicKey: string;
   keyId: string;
 };
+export function prepareRootAuthority(source: string, parsed: Record<string, string>, confirmed: boolean,
+  generate?: () => string): { after: string; authority: ReturnType<typeof publicRootAuthority>; changed: boolean };

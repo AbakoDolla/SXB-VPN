@@ -1,4 +1,4 @@
-const { createECDH, createHmac, createPrivateKey, createPublicKey, createHash } = require('node:crypto');
+const { createECDH, createHmac, createPrivateKey, createPublicKey, createHash, randomBytes, randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createRequire } = require('node:module');
@@ -7,7 +7,7 @@ const CREDENTIAL = 'SXB-ROOT-ACCESS-1';
 const curveOrder = BigInt('0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551');
 
 function rootSigningIdentity(secret) {
-  if (typeof secret !== 'string' || secret.length < 32 || secret.startsWith('CHANGE_ME')) {
+  if (typeof secret !== 'string' || !/^[a-f0-9]{64}$/.test(secret) || new Set(secret).size < 8) {
     throw new Error('ROOT_SIGNING_UNAVAILABLE');
   }
   const seed = createHmac('sha256', secret).update('SXB/ROOT-APPROVAL/EC/v1').digest('hex');
@@ -29,7 +29,21 @@ function publicRootAuthority(secret) {
     publicKey: signer.publicKey, keyId: signer.keyId };
 }
 
-module.exports = { CREDENTIAL, rootSigningIdentity, publicRootAuthority };
+function prepareRootAuthority(source, parsed, confirmed, generate = () => randomBytes(32).toString('hex')) {
+  const pattern = /^[ \t]*(?:export[ \t]+)?ROOT_APPROVAL_SECRET[ \t]*=[^\r\n]*/gm;
+  const lines = source.match(pattern) || [];
+  if (lines.length > 1 || (lines.length === 1) !== Object.hasOwn(parsed, 'ROOT_APPROVAL_SECRET')) {
+    throw new Error('ROOT_SECRET_AMBIGUOUS');
+  }
+  if (lines.length) return { after: source, authority: publicRootAuthority(parsed.ROOT_APPROVAL_SECRET), changed: false };
+  if (!confirmed) throw new Error('ROOT_PREPARATION_NOT_CONFIRMED');
+  const secret = generate();
+  const authority = publicRootAuthority(secret);
+  return { after: source + (source.endsWith('\n') ? '' : '\n') + `ROOT_APPROVAL_SECRET=${secret}\n`,
+    authority, changed: true };
+}
+
+module.exports = { CREDENTIAL, rootSigningIdentity, publicRootAuthority, prepareRootAuthority };
 if (require.main === module) {
   try {
     const root = '/var/www/sxb-vpn';
@@ -38,10 +52,28 @@ if (require.main === module) {
       throw new Error('ROOT_SOURCE_CHANGED');
     }
     const requireBackend = createRequire(path.join(root, 'backend', 'package.json'));
-    const env = requireBackend('dotenv').parse(fs.readFileSync(path.join(root, '.env'), 'utf8'));
-    console.log(JSON.stringify(publicRootAuthority(env.ROOT_APPROVAL_SECRET || env.ENCRYPTION_KEY)));
+    const envFile = path.join(root, '.env');
+    const source = fs.readFileSync(envFile, 'utf8');
+    const env = requireBackend('dotenv').parse(source);
+    if (!['inspect', 'prepare'].includes(process.env.SXB_ROOT_MODE)) throw new Error('ROOT_MODE_INVALID');
+    const plan = process.env.SXB_ROOT_MODE === 'prepare'
+      ? prepareRootAuthority(source, env, process.env.SXB_ROOT_CONFIRMED === 'true')
+      : { changed: false, authority: publicRootAuthority(env.ROOT_APPROVAL_SECRET) };
+    if (plan.changed) {
+      const directory = path.join(root, 'backups', 'root-approval-key');
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(directory, randomUUID() + '.env'), source, { flag: 'wx', mode: 0o600 });
+      const temporary = envFile + '.root-' + randomUUID();
+      try {
+        if (fs.readFileSync(envFile, 'utf8') !== source) throw new Error('ROOT_ENV_CHANGED');
+        fs.writeFileSync(temporary, plan.after, { flag: 'wx', mode: fs.statSync(envFile).mode & 0o777 });
+        if (fs.readFileSync(envFile, 'utf8') !== source) throw new Error('ROOT_ENV_CHANGED');
+        fs.renameSync(temporary, envFile);
+      } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+    }
+    console.log(JSON.stringify({ ...plan.authority, prepared: plan.changed }));
   } catch (error) {
-    console.error(['ROOT_SIGNING_UNAVAILABLE', 'ROOT_SOURCE_CHANGED'].includes(error?.message)
+    console.error(/^ROOT_[A-Z_]+$/.test(error?.message || '')
       ? error.message : 'ROOT_KEY_INSPECTION_FAILED');
     process.exitCode = 1;
   }

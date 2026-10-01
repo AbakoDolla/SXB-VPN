@@ -1,8 +1,18 @@
-name: Read root approval public authority
-run-name: Root approval authority — ${{ inputs.operation_id }}
+name: Prepare and read root approval public authority
+run-name: Root approval ${{ inputs.mode }} — ${{ inputs.operation_id }}
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        type: choice
+        options: [inspect, prepare]
+        default: inspect
+        required: true
+        description: Read-only inspect, or prepare a dedicated server-only signing secret once
+      confirmed:
+        type: boolean
+        default: false
+        description: Confirm adding only a missing ROOT_APPROVAL_SECRET with a private environment backup
       operation_id:
         type: string
         required: true
@@ -30,6 +40,8 @@ jobs:
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           SXB_ROOT_EXPECTED_SHA: ${{ github.sha }}
+          SXB_ROOT_MODE: ${{ inputs.mode }}
+          SXB_ROOT_CONFIRMED: ${{ inputs.confirmed }}
         with:
           host: 141.95.112.93
           username: ubuntu
@@ -38,7 +50,7 @@ jobs:
           fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
           timeout: 30s
           command_timeout: 30s
-          envs: SXB_ROOT_CODE,SXB_ROOT_EXPECTED_SHA
+          envs: SXB_ROOT_CODE,SXB_ROOT_EXPECTED_SHA,SXB_ROOT_MODE,SXB_ROOT_CONFIRMED
           script: |
             set -euo pipefail
             set +x
