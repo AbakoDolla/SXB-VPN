@@ -10,7 +10,9 @@ async function waitForBootstrapBackend(readHealth, {
     catch { report(`BOOTSTRAP_BACKEND_NETWORK_PENDING attempt=${attempt}`); }
     if (health?.status === 'ok' && health.service === 'sxb-vpn-backend' &&
         Number.isSafeInteger(health.capabilities?.mobileTunnelBootstrap) &&
-        health.capabilities.mobileTunnelBootstrap >= 1) return;
+        health.capabilities.mobileTunnelBootstrap >= 1 &&
+        Number.isSafeInteger(health.capabilities?.mobileDirectSsh) &&
+        health.capabilities.mobileDirectSsh >= 1) return;
     report(`BOOTSTRAP_BACKEND_CAPABILITY_PENDING attempt=${attempt}`);
     if (attempt < attempts) await pause();
   }

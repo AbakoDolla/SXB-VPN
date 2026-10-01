@@ -16,7 +16,8 @@ test('public release waits for the compatible backend without blocking private c
   const release = job.steps.findIndex(step => step.name === 'GitHub Release');
   assert.ok(gate > 0 && gate < release);
   assert.equal(job.steps[gate].if, "github.ref == 'refs/heads/main'");
-  const ready = { status: 'ok', service: 'sxb-vpn-backend', capabilities: { mobileTunnelBootstrap: 1 } };
+  const ready = { status: 'ok', service: 'sxb-vpn-backend',
+    capabilities: { mobileTunnelBootstrap: 1, mobileDirectSsh: 1 } };
   let reads = 0;
   const options = { attempts: 3, pause: async () => {}, report: () => {} };
   await waitForBootstrapBackend(async () => ++reads === 3 ? ready : { status: 'ok' }, options);
@@ -24,6 +25,7 @@ test('public release waits for the compatible backend without blocking private c
   for (const read of [
     async () => { throw new Error('synthetic offline'); },
     async () => ({ ...ready, capabilities: { mobileTunnelBootstrap: 0 } }),
+    async () => ({ ...ready, capabilities: { mobileTunnelBootstrap: 1 } }),
     async () => ({ ...ready, status: 'error' }),
     async () => ({ ...ready, service: 'another-backend' }),
   ]) await assert.rejects(waitForBootstrapBackend(read, options), /BOOTSTRAP_BACKEND_NOT_DEPLOYED/);

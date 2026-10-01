@@ -15,73 +15,23 @@
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
-import { NativeModules, Platform } from 'react-native';
 import * as configStore from './configStore';
-import { isCompleteOfflineConfig, isSshRelayConfig } from './configValidator';
+import { isCompleteOfflineConfig } from './configValidator';
 import apiClient from './apiClient';
 import { decryptSxbBlob, utf8Decode } from './aesGcm';
-import { accessIssueFromError, isRecord, type AccessIssue } from './accessPolicy';
+import { accessIssueFromError, type AccessIssue } from './accessPolicy';
 import { requireDeviceAccess, requireProfileAccess } from './accessState';
 import { accessRequestStamp, currentIdentityRequest } from './accessEvents';
 import { requireVpnConsent } from './privacyConsent';
-import { sessionSecurity } from './deviceSecurity';
 
 const PROV_KEY = 'sxb_prov_config_v2';
 const PROV_META_KEY = 'sxb_prov_meta_v2';
 const PROVISION_MAX_ATTEMPTS = 3;
 
-export async function currentRelaySession(): Promise<string | undefined> {
-  const security = await sessionSecurity();
-  return security ? JSON.stringify([security.sessionId, security.generation, security.keyId, security.clientId]) : undefined;
-}
-
 export const RELAY_PROVISION_CODES = new Set([
   'RELAY_CLIENT_UPDATE_REQUIRED', 'RELAY_BOUND_SESSION_REQUIRED', 'RELAY_PROFILE_NOT_READY',
+  'SSH_DIRECT_SYNC_REQUIRED',
 ]);
-
-/** Refresh only the short-lived gateway credential, never the provider configuration. */
-export async function refreshRelayCredential(id: string, config: Record<string, unknown>) {
-  if (!isSshRelayConfig(config)) throw new Error('RELAY_CONFIG_INVALID');
-  requireVpnConsent();
-  requireDeviceAccess();
-  requireProfileAccess({ configId: id });
-  const previous = config.sshRelay as { ticket: string; expiresAt: string };
-  if (Date.parse(previous.expiresAt) - Date.now() > 300_000) return config;
-  const identity = accessRequestStamp();
-  let credential: unknown;
-  try {
-    const response = await apiClient.post('/provision/ssh-relay/refresh', { ticket: previous.ticket }, { timeout: 15000 });
-    credential = response.data;
-  } catch (error) {
-    if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
-    requireVpnConsent();
-    requireDeviceAccess();
-    requireProfileAccess({ configId: id });
-    const failure = toProvisioningError(error, 1);
-    if (!failure.diagnostic.httpStatus &&
-        ['PVN_NETWORK', 'PVN_TIMEOUT'].includes(failure.diagnostic.code) &&
-        Date.parse(previous.expiresAt) - Date.now() > 30_000) {
-      const current = await configStore.get(id);
-      if (current.status === 'error') throw current.error ?? new Error('CONFIG_STORAGE_UNAVAILABLE');
-      if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
-      requireDeviceAccess();
-      requireProfileAccess({ configId: id });
-      if (!current.value || !isSshRelayConfig(current.value.config) ||
-          current.value.config.sshRelay?.ticket !== previous.ticket) throw new Error('RELAY_CREDENTIAL_CHANGED');
-      console.warn('[Provision] Renewal deferred; current credential remains valid:', failure.diagnostic.code);
-      return current.value.config;
-    }
-    throw failure;
-  }
-  if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
-  requireVpnConsent();
-  if (!isRecord(credential) || typeof credential.ticket !== 'string' || typeof credential.expiresAt !== 'string' ||
-      !isSshRelayConfig({ ...config, sshRelay: { ...credential, version: 1 } }) ||
-      Date.parse(credential.expiresAt) <= Date.now()) throw new Error('RELAY_CREDENTIAL_INVALID');
-  return (await configStore.replaceRelayCredential(id, previous.ticket, {
-    ticket: credential.ticket, expiresAt: credential.expiresAt,
-  })).config;
-}
 
 type ProvisionStage = 'request' | 'response' | 'decrypt' | 'parse' | 'store';
 
@@ -155,9 +105,8 @@ async function requestProvision(dataToken: string, deviceId: string) {
   let lastError: unknown;
   for (let attempt = 1; attempt <= PROVISION_MAX_ATTEMPTS; attempt += 1) {
     try {
-      const relay = Platform.OS === 'android' && NativeModules.SxbVpnNative?.sshRelayVersion === 1;
       return await apiClient.post('/provision/activate', { dataToken, deviceId }, {
-        timeout: 15_000, ...(relay ? { headers: { 'X-SXB-SSH-Relay': '1' } } : {}),
+        timeout: 15_000, headers: { 'X-SXB-SSH-Direct': '1' },
       });
     } catch (error) {
       lastError = error;
@@ -276,9 +225,9 @@ export async function provisionAndStore(
   dataToken: string,
   deviceId:  string,
   storageId?: string,
+  expected?: configStore.StoredConfig,
 ): Promise<ProvisionResult> {
   const identity = accessRequestStamp();
-  const relaySession = await currentRelaySession();
   requireVpnConsent();
   requireDeviceAccess();
   const res = await requestProvision(dataToken, deviceId);
@@ -393,6 +342,11 @@ export async function provisionAndStore(
   // technique manquant) : l'écrire écraserait un profil qui fonctionnait et
   // laisserait l'utilisateur sans VPN utilisable, y compris hors ligne.
   const completeness = isCompleteOfflineConfig(vpnConfig);
+  if (vpnConfig.sshRelay !== undefined) {
+    throw new ProvisioningError('La configuration SSH directe doit être synchronisée avec le serveur.', {
+      code: 'SSH_DIRECT_SYNC_REQUIRED', stage: 'parse', attempts: 1, retryable: true, requestId,
+    });
+  }
   if (!completeness.complete) {
     throw new ProvisioningError(
       `Configuration incomplète — champs manquants : ${completeness.missing.join(', ')}`,
@@ -408,9 +362,9 @@ export async function provisionAndStore(
     subscriptionId: meta.subscriptionId, quotaTotal: Math.round(meta.quotaGB * 1024 ** 3),
     quotaUsed: Math.round(meta.quotaUsedGB * 1024 ** 3), expiryDate: meta.expireAt,
     configVersion: meta.configVersion, configHash: meta.configHash,
-    relaySession: isSshRelayConfig(vpnConfig) ? relaySession : undefined,
-    sshRelayRequired: isSshRelayConfig(vpnConfig),
-  });
+    relaySession: undefined,
+    sshRelayRequired: false,
+  }, expected);
   if (stored.status !== 'ok') {
     if (stored.error && accessIssueFromError(stored.error)) throw stored.error;
     throw new ProvisioningError('Stockage chiffré indisponible', {

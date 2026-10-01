@@ -124,7 +124,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     override fun getConstants(): Map<String, Any> = mapOf(
         "distribution" to SxbPrivacyPolicy.distribution(reactApplicationContext),
-        "sshRelayVersion" to 1,
+        "sshDirectVersion" to 1,
     )
 
     @ReactMethod

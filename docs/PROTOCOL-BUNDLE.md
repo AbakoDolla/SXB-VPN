@@ -174,7 +174,58 @@ secrecy on a fully compromised/rooted device.
 The software bridge fixtures and loopback transfers are not proof of Android
 Keystore hardware isolation or successful traffic on a carrier network.
 
-## Opt-in SSH gateway
+## Direct SSH without an SXB gateway
+
+At the owner's request, current provisioning always returns the imported SSH
+engine configuration through the existing device-bound encrypted envelope.
+The provider host, port, username, password or private key, payload, declared
+proxy and UDPGW fields remain unchanged. Neither an old profile allowlist nor
+a future-import cutoff can replace that configuration with an SXB gateway.
+`/mobile/connections` advertises `sshDirectAvailable: true` and
+`sshRelayAvailable: false` for SSH. The release gate checks
+`mobileDirectSsh: 1` before publishing the new Android client.
+
+The current APK has no `SxbGatewaySocketFactory` and does not call the relay
+ticket endpoint or fixed `/api/mobile/ssh-relay` ingress. Ordinary SSH uses
+JSch over the directly protected socket; an HTTP proxy explicitly specified
+in a payload profile is still respected. A plain CONNECT payload tries only
+plain raw/WS strategies, never TLS injected as a compatibility experiment.
+An explicitly imported SSH-over-TLS profile retains its TLS, just as VLESS,
+Reality, HTTPS and other protocols retain their declared encryption.
+SSH itself remains encrypted; removing the extra TLS wrapper does not send
+an SSH password as cleartext over TCP. A plain HTTP payload remains visible.
+
+Already-installed relay-only profiles contain no supplier credentials.
+They must be provisioned once while the control API is reachable, through
+automatic configuration refresh or an explicit refresh. A migration never
+guesses or derives credentials from an old ticket and never dials that
+gateway in the new APK. An offline migration reports
+`SSH_DIRECT_SYNC_REQUIRED`; it does not claim a usable direct configuration.
+Once a complete, current direct profile is stored locally, subsequent starts
+and normal radio reconnects require no catalogue or Internet preflight.
+Late migration responses cannot recreate a deleted/dismissed profile or
+replace a concurrently updated one.
+
+Authorized devices sharing a supplier each receive a separately device-bound
+configuration for their own subscription. Local access state, quota checks,
+durable accounting and remote revocation remain in place. Removing the
+central forwarding hop removes its independently metered forwarding path:
+direct usage is counted by the native TUN/ledger and synchronized through
+the tunnel, not observed independently by the backend. A fully hostile client
+can still misreport direct usage. Supplier session limits and carrier
+reachability are outside the application's control.
+
+The historical backend route remains for previously issued tickets during
+rollout so older installations are not cut off before updating. It is not
+used or offered by the new APK, and new provisioning never issues a relay
+configuration. This compatibility route does not force existing or future
+direct SSH profiles through the gateway.
+
+## Historical opt-in SSH gateway
+
+The following describes the older APK 187 and earlier gateway architecture,
+not the current client. Its profile policy now affects only historical
+ticket handling; direct configuration delivery is not controlled by it.
 
 The gateway keeps provider credentials, destination, payload and host-key
 fingerprint on the backend. A capable Android binary advertises
@@ -311,13 +362,15 @@ session. A failed synchronization retains the frozen reports for retry; it canno
 discard traffic or change its subscription. Sync only records accounting metadata:
 it never authorizes an SSH Upgrade, extends access, reopens a closed binding or
 changes an existing association. Historical direct usage can therefore be attributed
-after a plan expires, without permitting a new tunnel on that expired plan. Missing
-protected-SSH bindings cannot be synthesized as direct ones.
+after a plan expires, without permitting a new tunnel on that expired plan. An existing historical relay binding cannot be reinterpreted as a direct
+connection; newly provisioned SSH uses its own direct accounting identity.
 
 Pre-engine network failures retain their safe diagnostic codes. Activation, first
 import and expired-credential renewal still require their authorized service.
 Enabling cellular data is sufficient to attempt a cached connection; the actual
-VPN target (including the private SSH gateway) must nevertheless be reachable.
+VPN target must nevertheless be reachable. For the current client this is
+the provider endpoint or the HTTP proxy explicitly declared in its profile,
+not the central SXB TLS gateway.
 No general Internet probe or Android `NET_CAPABILITY_VALIDATED` result is required.
 The public APK workflow waits for `capabilities.mobileTunnelBootstrap >= 1` in
 the deployed backend's health response before replacing the public release.

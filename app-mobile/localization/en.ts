@@ -551,6 +551,7 @@ export const en = {
   step_quota_ok: 'Sufficient quota',
   step_quota_pending: 'Local balance awaiting server confirmation',
   ssh_update_required: 'Update the app to use this SSH gateway.',
+  ssh_direct_sync_required: 'Refresh configurations once with access to the server to obtain the direct SSH credentials. Later connections will use the local profile.',
   ssh_activation_required: 'Reactivate your account on this device. If authorization is required, contact your administrator.',
   ssh_profile_not_ready: 'Your administrator needs to verify this SSH configuration.',
   tech_gateway_start: 'Opening the private gateway…',

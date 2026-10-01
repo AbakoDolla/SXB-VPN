@@ -204,7 +204,7 @@ fun main(args: Array<String>) {
     check(journal.classify("connection is closed by foreign host") == "SSH_PEER_CLOSED")
     check(journal.classify("Auth fail") == "AUTH_FAILED")
     check(journal.classify("Read timed out") == "TCP_TIMEOUT")
-    check(journal.classify(IOException("SSH_RELAY_TLS_TIMEOUT", java.net.SocketTimeoutException("Read timed out"))) == "TLS_TIMEOUT")
+    check(journal.classify("SSH_DIRECT_SYNC_REQUIRED") == "SSH_DIRECT_SYNC_REQUIRED")
     check(journal.classify("SSLHandshakeException: certificate rejected") == "TLS_FAILED")
     check(journal.classify("HTTP_BAD_REQUEST") == "HTTP_BAD_REQUEST")
     check(journal.classify("something unknown") == "VPN_FAILED")
@@ -291,7 +291,55 @@ fun main(args: Array<String>) {
         }
     } finally { pair.dispose() }
     sshDataScenarios(JSONObject(File(args[1]).readText()))
+    multiDeviceDirectScenario(JSONObject(File(args[1]).readText()))
     println("SSH production JVM: Dropbear/no HTTP wait, CONNECT, HTTP rejection, verified TLS ordering/identity, split timing and memory key import passed")
+}
+
+private fun multiDeviceDirectScenario(peer: JSONObject) {
+    val ready = java.util.concurrent.CountDownLatch(3)
+    val failures = Collections.synchronizedList(mutableListOf<Throwable>())
+    val protected = java.util.concurrent.atomic.AtomicInteger()
+    val workers = (1..3).map {
+        Thread {
+            var session: com.jcraft.jsch.Session? = null
+            try {
+                val jsch = JSch()
+                jsch.setKnownHosts(ByteArrayInputStream("fixture-key ssh-rsa ${peer.getString("hostKey")}\n".toByteArray()))
+                val candidate = jsch.getSession(peer.getString("username"), "127.0.0.1", peer.getInt("sshPort"))
+                session = candidate
+                candidate.setHostKeyAlias("fixture-key")
+                candidate.setConfig("StrictHostKeyChecking", "yes")
+                candidate.setConfig("PreferredAuthentications", "password")
+                candidate.setPassword(peer.getString("password"))
+                candidate.setSocketFactory(SxbLoggingSocketFactory(10000, "127.0.0.1", peer.getInt("sshPort"), { socket ->
+                    check(!socket.isConnected && socket !is SSLSocket)
+                    protected.incrementAndGet()
+                    true
+                }) {})
+                connectCandidate(candidate, 10000)
+                ready.countDown()
+                check(ready.await(15, java.util.concurrent.TimeUnit.SECONDS)) { "Three independent direct sessions did not coexist" }
+                val channel = candidate.openChannel("direct-tcpip") as com.jcraft.jsch.ChannelDirectTCPIP
+                channel.setHost("127.0.0.1")
+                channel.setPort(peer.getInt("downloadPort"))
+                val input = channel.inputStream
+                val output = channel.outputStream
+                try {
+                    channel.connect(5000)
+                    output.write("GET / HTTP/1.0\r\n\r\n".toByteArray())
+                    output.close()
+                    val bytes = input.readBytes()
+                    val boundary = bytes.toString(Charsets.ISO_8859_1).indexOf("\r\n\r\n") + 4
+                    check(boundary > 4 && bytes.copyOfRange(boundary, bytes.size).contentEquals(ByteArray(256 * 1024) { 0x61 }))
+                } finally { channel.disconnect() }
+            } catch (error: Throwable) { failures.add(error); ready.countDown() }
+            finally { session?.disconnect() }
+        }.apply { start() }
+    }
+    workers.forEach { it.join(30000); check(!it.isAlive) { "Direct multi-device SSH worker did not finish" } }
+    failures.firstOrNull()?.let { throw AssertionError("Direct concurrent transfer failed", it) }
+    check(protected.get() == 3)
+    println("PASS: three concurrent direct SSH sessions share the supplier with protected plain TCP and independent 256 KiB downloads")
 }
 
 private fun sshDataScenarios(peer: JSONObject) {

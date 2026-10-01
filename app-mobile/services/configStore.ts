@@ -282,11 +282,31 @@ export async function migrateLegacy(): Promise<StoreResult<void>> {
     return { status: 'ok' };
   } catch (error: any) { return { status: 'error', error }; }
 }
-export async function save(id: string, config: Record<string, any>, meta: Partial<ConfigMeta> = {}): Promise<StoreResult<StoredConfig>> {
+async function unsealConfig(raw: string, id: string): Promise<Record<string, any>> {
+  const vault = nativeVault();
+  if (raw.startsWith('v1:')) {
+    if (!vault) throw new Error('CONFIG_VAULT_UNAVAILABLE');
+    const config = JSON.parse(await vault.decrypt(raw));
+    if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('CONFIG_VAULT_FORMAT_INVALID');
+    return config;
+  }
+  return decrypt(raw, await masterKey(), id);
+}
+
+export async function save(id: string, config: Record<string, any>, meta: Partial<ConfigMeta> = {},
+  expected?: StoredConfig): Promise<StoreResult<StoredConfig>> {
   try { return await mutate(async () => {
     const entries = await registry();
     // Equal payload hashes are not equal entitlements: A and B can share a server.
     const old = entries.find(x => x.configId === id);
+    if (expected) {
+      const raw = await AsyncStorage.getItem(payloadKey(id));
+      if (!old || !raw || (await dismissedIds()).includes(id) ||
+          old.savedAt !== expected.meta.savedAt || old.configHash !== expected.meta.configHash ||
+          JSON.stringify(await unsealConfig(raw, id)) !== JSON.stringify(expected.config)) {
+        throw new Error('SSH_PROFILE_CHANGED');
+      }
+    }
     const autres = entries.filter(x => x.configId !== id);
     const candidat: ConfigMeta = { ...old, ...meta, configId: id,
       source: meta.source ?? old?.source ?? (meta.subscriptionId ? 'backend' : 'manual') };
@@ -332,13 +352,8 @@ export async function get(id: string): Promise<StoreResult<StoredConfig>> {
     const raw = await AsyncStorage.getItem(payloadKey(id));
     if (!raw) return { status: 'error', error: new Error('Payload absent') };
     const vault = nativeVault();
-    if (raw.startsWith('v1:')) {
-      if (!vault) throw new Error('CONFIG_VAULT_UNAVAILABLE');
-      const config = JSON.parse(await vault.decrypt(raw));
-      if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('CONFIG_VAULT_FORMAT_INVALID');
-      return { status: 'ok', value: { config, meta } };
-    }
-    const config = decrypt(raw, await masterKey(), id);
+    const config = await unsealConfig(raw, id);
+    if (raw.startsWith('v1:')) return { status: 'ok', value: { config, meta } };
     if (vault && !estLeurre(config)) {
       await mutate(async () => {
         // Never resurrect a removed profile or overwrite a concurrent update.
@@ -415,26 +430,6 @@ export async function updateMetadata(id: string, update: Partial<Pick<ConfigMeta
     await putRegistry(entries.map(x => x.configId === id ? meta : x));
     return { status: 'ok' as const, value: meta };
   }); } catch (error: any) { return { status: 'error', error }; }
-}
-
-export async function replaceRelayCredential(
-  id: string, expectedTicket: string, credential: { ticket: string; expiresAt: string },
-): Promise<StoredConfig> {
-  return mutate(async () => {
-    const meta = (await registry()).find(entry => entry.configId === id);
-    if (!meta) throw new Error('RELAY_PROFILE_CHANGED');
-    requireProfileAccess(meta);
-    const raw = await AsyncStorage.getItem(payloadKey(id));
-    if (!raw) throw new Error('RELAY_PROFILE_MISSING');
-    const vault = nativeVault();
-    const config = raw.startsWith('v1:')
-      ? JSON.parse(await (vault ? vault.decrypt(raw) : Promise.reject(new Error('CONFIG_VAULT_UNAVAILABLE'))))
-      : decrypt(raw, await masterKey(), id);
-    if (config?.sshRelay?.ticket !== expectedTicket) throw new Error('RELAY_PROFILE_CHANGED');
-    const updated = { ...config, sshRelay: { version: 1, ...credential } };
-    await AsyncStorage.setItem(payloadKey(id), await sealConfig(updated));
-    return { config: updated, meta };
-  });
 }
 
 export const updateQuota = (id: string, usedBytes: number) => updateMetadata(id, { quotaUsed: Math.max(0, usedBytes) });

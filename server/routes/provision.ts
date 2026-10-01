@@ -24,10 +24,8 @@ import { deviceIdFromRequest } from '../services/mobile-principal';
 import {
   deviceAccessStatus, deviceAccessFailure, subscriptionAccessStatus, subscriptionAccessFailure, sessionInvalidFailure, MobileAccessError,
 } from '../services/access-lifecycle';
-import { checkSession, consumeSessionProof } from '../services/mobile-session-security';
-import { config } from '../config';
-import { issueRelayTicket, relayClientConfig, relayProfileEnabled } from '../services/ssh-relay-ticket';
-import { readRelayProfile, renewRelayTicket } from '../services/ssh-relay-auth';
+import { consumeSessionProof } from '../services/mobile-session-security';
+import { renewRelayTicket } from '../services/ssh-relay-auth';
 import { proofFor, securityFailure } from '../services/mobile-proof';
 import crypto               from 'crypto';
 import {
@@ -381,29 +379,8 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
 
     // 7. Calcul de l'expiration de la configuration locale
     const offlineDays    = profile?.offlineValidDays || 7;
-    let configExpiresAt = new Date(Date.now() + offlineDays * 86_400_000).toISOString();
+    const configExpiresAt = new Date(Date.now() + offlineDays * 86_400_000).toISOString();
     const provisionedAt   = new Date().toISOString();
-
-    if (profile && relayProfileEnabled(profile)) {
-      if (req.get('X-SXB-SSH-Relay') !== '1') {
-        return res.status(426).json({ code: 'RELAY_CLIENT_UPDATE_REQUIRED', error: 'Mettez à jour SXB VPN pour utiliser la passerelle privée de ce forfait.' });
-      }
-      const bound = req.user ? await checkSession(req.user) : null;
-      if (!bound || !req.user?.clientId || !req.user.deviceId || !bound.session.authExpiresAt) {
-        return res.status(409).json({ code: 'RELAY_BOUND_SESSION_REQUIRED', error: 'Une activation sécurisée est requise pour cette passerelle.' });
-      }
-      try { readRelayProfile(profile); }
-      catch {
-        return res.status(503).json({ code: 'RELAY_PROFILE_NOT_READY', error: 'La passerelle de ce forfait doit être vérifiée par son gestionnaire.' });
-      }
-      const credential = issueRelayTicket({
-        userId: req.user.userId, clientId: req.user.clientId, deviceId: req.user.deviceId,
-        sid: req.user.sid, sg: req.user.sg, kid: req.user.kid,
-        subscriptionId: sub.id, configHash: configHashForProfile(profile)!,
-      }, config.JWT_SECRET, Math.min(Date.parse(configExpiresAt), bound.session.authExpiresAt.getTime()));
-      configExpiresAt = credential.expiresAt;
-      rawConfig = relayClientConfig(rawConfig, profile.id, credential);
-    }
 
     // 8. Chiffrement AES-256-GCM lié à l'appareil
     const token = sub.dataToken;

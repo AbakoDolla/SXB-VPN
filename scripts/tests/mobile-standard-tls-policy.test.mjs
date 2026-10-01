@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import vm from 'node:vm';
 const require = createRequire(import.meta.url);
 const { waitForBootstrapBackend } = require('../../app-mobile/scripts/verify-bootstrap-backend.cjs');
@@ -25,16 +25,13 @@ test('incremental and clean manifest generation remove the extra pinning metadat
   assert.doesNotMatch(plugin, /pinsForOrigin|EXPO_PUBLIC_BACKEND_SPKI_PINS/);
 });
 
-test('API, observer and gateway keep platform TLS without key allowlists or trust-all replacements', () => {
+test('API and observer keep normal TLS while the central SSH socket factory is removed', () => {
   const tls = read('app-mobile/modules/android-native/SxbBackendTls.kt');
-  assert.match(tls, /openConnection\(\) as HttpsURLConnection\)\.sslSocketFactory/);
   assert.doesNotMatch(tls, /CertificatePinner|X509TrustManager|SxbTlsPinPolicy|SSLContext\.getInstance|HostnameVerifier/);
   assert.doesNotMatch(read('app-mobile/modules/android-native/SxbVpnPackage.kt'), /SxbBackendTls\.install/);
   assert.match(read('app-mobile/modules/android-native/SxbAccessObserver.kt'), /SxbBackendTls\.protect\(context, http\)/);
-  const gateway = read('app-mobile/modules/android-native/SxbGatewaySocketFactory.kt');
-  assert.match(gateway, /SxbBackendTls\.socketFactory\(context\)/);
-  assert.match(gateway, /endpointIdentificationAlgorithm = "HTTPS"/);
-  assert.match(gateway, /listOf\("TLSv1\.3", "TLSv1\.2"\)/);
+  assert.equal(existsSync(new URL('../../app-mobile/modules/android-native/SxbGatewaySocketFactory.kt', import.meta.url)), false);
+  assert.doesNotMatch(read('app-mobile/modules/android-native/SxbVpnService.kt'), /SxbGatewaySocketFactory|SSH_GATEWAY_TLS/);
 });
 
 test('takeover cancels starts and closes TUN and pending SSH before the main UI queue', () => {
@@ -43,7 +40,7 @@ test('takeover cancels starts and closes TUN and pending SSH before the main UI 
   assert.ok(revoke);
   const synchronous = revoke.slice(0, revoke.indexOf('Handler('));
   for (const required of ['SxbAccessControl.cancelStarts(this)', 'autoReconnect.markStopped("system_vpn_revoke")',
-    'interruptForAccess()', 'gatewaySocketFactory?.close()', 'sshSession?.disconnect()', 'setCurrentState("disconnected")']) {
+    'interruptForAccess()', 'sshTransportSocket?.close()', 'sshSession?.disconnect()', 'setCurrentState("disconnected")']) {
     assert.ok(synchronous.includes(required), required);
   }
   assert.ok(synchronous.indexOf('interruptForAccess()') < synchronous.indexOf('SxbAccessControl.cancelStarts(this)'));
@@ -63,7 +60,8 @@ test('takeover cancels starts and closes TUN and pending SSH before the main UI 
 });
 
 test('the release still waits for compatible offline bootstrap, not a compiled certificate key', async () => {
-  const compatible = { status: 'ok', service: 'sxb-vpn-backend', capabilities: { mobileTunnelBootstrap: 1 } };
+  const compatible = { status: 'ok', service: 'sxb-vpn-backend',
+    capabilities: { mobileTunnelBootstrap: 1, mobileDirectSsh: 1 } };
   await waitForBootstrapBackend(async () => compatible, { attempts: 1 });
   await assert.rejects(waitForBootstrapBackend(async () => ({ ...compatible, capabilities: {} }),
     { attempts: 1, report: () => {} }), /BOOTSTRAP_BACKEND_NOT_DEPLOYED/);

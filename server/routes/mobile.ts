@@ -31,7 +31,6 @@ import {
 import { forfaitsEssaiDuClient } from "../services/free-trial-marks";
 import { activateBoundSession, consumeSessionProof } from "../services/mobile-session-security";
 import { updateMobileConnection } from "../services/mobile-connections";
-import { relayProfileEnabled } from "../services/ssh-relay-ticket";
 import { consumeProof, proofFor, securityFailure, type VerifiedProof } from "../services/mobile-proof";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
@@ -943,7 +942,6 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(selectedStatus === "deleted" ? 404 : 403).json(subscriptionAccessFailure(selectedStatus, sub.id));
     }
     const profile = subscriptionState === 'active' ? (sub?.profile || null) : null;
-    const privateRelay = !!profile?.id && relayProfileEnabled(profile);
     const proto = (profile?.protocol || "ssh").toLowerCase(); // "ssh" | "ssh+payload" | "vless" …
 
     // ── Charger le payload SSH (via JOIN Prisma d'abord, puis requête séparée) ─
@@ -971,20 +969,9 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     // ── Déchiffrer le mot de passe avant envoi au mobile ─────────────────
     const decryptedPassword = decryptField(profile?.password);
 
-    const protocols = privateRelay
-      ? [{ name: "SSH", port: 443, transport: "TCP", security: "TLS", description: "Actif — " + profile.name }]
-      : profile
-      ? [{ name: proto === "ssh+payload" ? "SSH+Payload" : proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "Bypass", description: "Actif — " + profile.name }]
+    const protocols = profile
+      ? [{ name: proto === "ssh+payload" ? "SSH+Payload" : proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : proto.startsWith("ssh") ? "SSH" : "Bypass", description: "Actif — " + profile.name }]
       : FALLBACK;
-
-    let connectionUri: string | null = null;
-    if (profile && !privateRelay) {
-      if (proto === "ssh" || proto === "ssh+payload") {
-        connectionUri = "ssh://" + (profile.username || "user") + "@" + profile.host + ":" + profile.port;
-        if (profile.sni) connectionUri += "?sni=" + encodeURIComponent(profile.sni);
-        if (proto === "ssh+payload") connectionUri += (connectionUri.includes("?") ? "&" : "?") + "mode=payload";
-      }
-    }
 
     // ── Réponse sécurisée — AUCUN credential en clair ─────────────────────────
     // Les credentials (host, port, username, password, uuid, payload) ne sont
@@ -994,8 +981,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       state: subscriptionState,
       protocols,
       serverInfo: { location: profile ? "SXB" : "Africa / Cameroun" },
-      // connectionUri exposé uniquement pour affichage informatif (pas de credential)
-      connectionUri: connectionUri ? connectionUri.replace(/:\/\/.*@/, '://***@') : null,
+      connectionUri: null,
       profile: profile ? {
         id:              profile.id,
         name:            profile.name,
@@ -1517,7 +1503,8 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         dataToken:  sub.dataToken,
         createdAt:  sub.createdAt ? new Date(sub.createdAt).toISOString() : new Date().toISOString(),
         configVersion: configVersionForProfile(profile),
-        sshRelayAvailable: !!profile?.id && relayProfileEnabled(profile),
+        sshRelayAvailable: false,
+        sshDirectAvailable: ["ssh", "ssh+payload"].includes(technicalProtocol.toLowerCase()),
         configHash:    configHashForProfile(profile),
         /** Cet accès provient-il d'un essai gratuit déployé ? (marqueur structurel) */
         isFreeTrial:   forfaitsEssai.has(String(sub.id)),

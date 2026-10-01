@@ -238,21 +238,30 @@ function installConfigVault(h: Harness) {
   return encrypt;
 }
 
+function sealedDirectProvision(h: Harness, config: Record<string, unknown>) {
+  const key = new Uint8Array(32).fill(7), iv = new Uint8Array(12).fill(3);
+  const sealed = h.aes.encryptAes256Gcm(key, iv, Buffer.from(JSON.stringify(config)));
+  const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+  return { deviceId: 'hardware', subscriptionId: 'a', profileName: 'Profile A', protocol: config.protocol,
+    configHash: 'hash-a', configVersion: 1, configKey: hex(key),
+    encryptedBlob: `gcm:${hex(iv)}:${hex(sealed.ciphertext)}:${hex(sealed.authTag)}` };
+}
+
 describe('native configuration vault and lossless migration', () => {
-  it('uses a near-renewal relay credential immediately without a control request', async () => {
+  it('starts cached SSH payload directly even with obsolete relay metadata and no Internet', async () => {
     const h = await harness();
     const { cleanup } = await setup(h, null);
     try {
       h.state.storage.set('@sxb_session_security_v1', JSON.stringify({
         version: 1, sessionId: 'synthetic-session', generation: 1, keyId: 'synthetic-key', clientId: 'client-not-user',
       }));
-      const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
-        sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 60_000).toISOString() } };
-      await h.store.save('a', relay, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a',
-        sshRelayRequired: true, relaySession: await h.provision.currentRelaySession() });
+      const direct = { protocol: 'ssh+payload', host: 'provider.invalid', port: 80, username: 'synthetic',
+        password: 'fixture-only', tls: false, payload: '[method] [ssh] [protocol][crlf]Host: [host][crlf][crlf]' };
+      await h.store.save('a', direct, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a',
+        sshRelayRequired: true, relaySession: 'old-relay-session' });
       let requests = 0;
       h.api.default.defaults.adapter = async () => { requests++; return new Promise(() => {}); };
-      equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), relay);
+      equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), direct);
       assert.equal(requests, 0);
     } finally { cleanup(); }
   });
@@ -273,7 +282,7 @@ describe('native configuration vault and lossless migration', () => {
     } finally { cleanup(); }
   });
 
-  it('opens a current relay cache without waiting for catalogue synchronization', async () => {
+  it('replaces a relay-only cache once and then starts direct without a catalogue request', async () => {
     const h = await harness();
     const { cleanup } = await setup(h, null);
     try {
@@ -283,18 +292,26 @@ describe('native configuration vault and lossless migration', () => {
       const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
         sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 3600000).toISOString() } };
       await h.store.save('a', relay, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a',
-        sshRelayRequired: true, relaySession: await h.provision.currentRelaySession() });
+        sshRelayRequired: true, dataToken: 'synthetic-token', relaySession: 'old-relay-session' });
+      const direct = { protocol: 'ssh', host: 'provider.invalid', port: 22, username: 'synthetic',
+        password: 'fixture-only' };
       let requests = 0;
       h.api.default.defaults.adapter = async request => {
         requests++;
-        throw new AxiosError('timeout of 15000ms exceeded', 'ECONNABORTED', request);
+        assert.equal(request.url, '/provision/activate');
+        assert.equal(request.headers['X-SXB-SSH-Direct'], '1');
+        assert.equal(request.headers['X-SXB-SSH-Relay'], undefined);
+        return { status: 200, statusText: 'OK', headers: {}, config: request, data: sealedDirectProvision(h, direct) };
       };
-      equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), relay);
-      assert.equal(requests, 0, 'an already valid relay must not depend on the catalogue HTTP endpoint');
+      equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), direct);
+      assert.equal(requests, 1, 'a relay ticket cannot manufacture the missing supplier identity locally');
+      h.api.default.defaults.adapter = async () => { requests++; return new Promise(() => {}); };
+      equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), direct);
+      assert.equal(requests, 1, 'the restored direct profile needs no further Internet preflight');
       await apply(h, snapshot('spent', 'active', 'exhausted'));
       await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!),
         (error: unknown) => h.policy.accessIssueFromError(error)?.code === 'CONFIG_EXHAUSTED');
-      assert.equal(requests, 0, 'a known access refusal must not start another catalogue request');
+      assert.equal(requests, 1, 'a known access refusal must not start another catalogue request');
     } finally { cleanup(); }
   });
 
@@ -391,25 +408,25 @@ describe('native configuration vault and lossless migration', () => {
     assert.equal(h.access.getAccessState().authority?.snapshot?.revision, 'fresh');
   });
 
-  for (const previous of ['direct', 'older-session', 'changed-profile'] as const) {
-    it(`upgrades ${previous} SSH cache to the current session without exposing provider credentials`, async () => {
+  for (const previous of ['expired-ticket', 'older-session', 'changed-profile'] as const) {
+    it(`migrates ${previous} gateway cache to encrypted direct supplier credentials`, async () => {
       const h = await harness();
       const { cleanup } = await setup(h, null);
       try {
-        h.state.native.sshRelayVersion = 1;
+        h.state.native.sshDirectVersion = 1;
         h.state.storage.set('@sxb_session_security_v1', JSON.stringify({
           version: 1, sessionId: 'new-session', generation: 2, keyId: 'key', clientId: 'client',
         }));
         const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
-          sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 3600000).toISOString() } };
-        const oldConfig = previous === 'direct'
-          ? { protocol: 'ssh', host: 'provider.invalid', port: 80, username: 'synthetic', password: 'fixture-only' } : relay;
-        await h.store.save('a', oldConfig, { source: 'backend', subscriptionId: 'a',
+          sshRelay: { version: 1, ticket: 'aaa.bbb.ccc',
+            expiresAt: new Date(Date.now() + (previous === 'expired-ticket' ? -1000 : 3600000)).toISOString() } };
+        const direct = { protocol: 'ssh+payload', host: 'provider.invalid', port: 80, username: 'synthetic',
+          privateKeyBase64: Buffer.from('synthetic-key-only').toString('base64'), privateKeyPassphrase: 'synthetic-passphrase',
+          payload: 'CONNECT [host_port] HTTP/1.1[crlf]Host: [host][crlf][delay_split][crlf]',
+          proxyEnabled: true, proxyHost: 'proxy.invalid', proxyPort: 8080, tls: false, sni: 'declared.example.test' };
+        await h.store.save('a', relay, { source: 'backend', subscriptionId: 'a',
           configHash: previous === 'changed-profile' ? 'older-hash' : 'hash-a',
-          relaySession: previous === 'changed-profile' ? await h.provision.currentRelaySession() : 'old-session' });
-        const key = new Uint8Array(32).fill(7), iv = new Uint8Array(12).fill(3);
-        const sealed = h.aes.encryptAes256Gcm(key, iv, Buffer.from(JSON.stringify(relay)));
-        const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+          relaySession: 'old-session' });
         let requests = 0;
         h.api.default.defaults.adapter = async request => {
           let data: unknown;
@@ -417,55 +434,59 @@ describe('native configuration vault and lossless migration', () => {
           else if (request.url === '/mobile/connections') {
             const remote = remoteConnections(snapshot('ssh-rollout'));
             data = { connections: remote.connections.map(entry => entry.id === 'a'
-              ? { ...entry, dataToken: 'synthetic-token', sshRelayAvailable: true, technicalProtocol: 'ssh' } : entry) };
+              ? { ...entry, dataToken: 'synthetic-token', sshRelayAvailable: false, sshDirectAvailable: true, technicalProtocol: 'ssh' } : entry) };
           } else if (request.url === '/provision/activate') {
             requests++;
-            assert.equal(request.headers['X-SXB-SSH-Relay'], '1');
+            assert.equal(request.headers['X-SXB-SSH-Direct'], '1');
+            assert.equal(request.headers['X-SXB-SSH-Relay'], undefined);
             assert.equal(JSON.parse(request.data).deviceId, 'hardware');
-            data = { deviceId: 'hardware', subscriptionId: 'a', profileName: 'Profile A', protocol: 'ssh',
-              configHash: 'hash-a', configVersion: 1, configKey: hex(key),
-              encryptedBlob: `gcm:${hex(iv)}:${hex(sealed.ciphertext)}:${hex(sealed.authTag)}` };
+            data = sealedDirectProvision(h, direct);
           } else throw new Error('Unexpected request');
           return { status: 200, statusText: 'OK', config: request, headers: {}, data };
         };
         const result = await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!);
-        equal(result, relay);
+        equal(result, direct);
         assert.equal(result.password, undefined);
         assert.equal(requests, 1);
-        assert.equal((await h.store.get('a')).value?.meta.relaySession, await h.provision.currentRelaySession());
+        assert.equal(result.sshRelay, undefined);
+        assert.equal((await h.store.get('a')).value?.meta.sshRelayRequired, false);
+        assert.equal((await h.store.get('a')).value?.meta.relaySession, undefined);
+        assert.equal((await h.store.get('a')).value?.meta.dataToken, undefined);
         await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!);
-        assert.equal(requests, 1, 'a current relay credential does not reprovision on every connect');
+        assert.equal(requests, 1, 'a complete direct profile does not reprovision on every connect');
       } finally { cleanup(); }
     });
   }
 
-  it('shows an existing SSH cache migration refusal and never dials its old direct credentials', async () => {
+  it('keeps a failed gateway-to-direct migration explicit and cannot dial the old gateway', async () => {
     const h = await harness();
     const { cleanup } = await setup(h, null);
     try {
-      const direct = { protocol: 'ssh', host: 'provider.invalid', port: 80, username: 'synthetic', password: 'fixture-only' };
-      await h.store.save('a', direct, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a' });
+      const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
+        sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 3600000).toISOString() } };
+      await h.store.save('a', relay, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a' });
       h.api.default.defaults.adapter = async request => {
         let data: unknown;
         if (request.url === '/mobile/access-state') data = snapshot('ssh-rollout');
         else if (request.url === '/mobile/connections') {
           const remote = remoteConnections(snapshot('ssh-rollout'));
           data = { connections: remote.connections.map(entry => entry.id === 'a'
-            ? { ...entry, dataToken: 'synthetic-token', sshRelayAvailable: true } : entry) };
-        } else throw httpError(request, 409, { code: 'RELAY_BOUND_SESSION_REQUIRED' });
+            ? { ...entry, dataToken: 'synthetic-token', sshRelayAvailable: false, sshDirectAvailable: true } : entry) };
+        } else throw httpError(request, 503, { code: 'SSH_DIRECT_SYNC_REQUIRED' });
         return { status: 200, statusText: 'OK', config: request, headers: {}, data };
       };
       await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!),
-        (error: unknown) => error instanceof h.provision.ProvisioningError && error.diagnostic.code === 'RELAY_BOUND_SESSION_REQUIRED');
-      assert.equal(h.sync.getImportNotes().get('a')?.code, 'RELAY_BOUND_SESSION_REQUIRED');
-      equal((await h.store.get('a')).value?.config, direct);
-      assert.equal((await h.store.get('a')).value?.meta.sshRelayRequired, true);
+        (error: unknown) => error instanceof h.provision.ProvisioningError && error.diagnostic.code === 'SSH_DIRECT_SYNC_REQUIRED');
+      assert.equal(h.sync.getImportNotes().get('a')?.code, 'SSH_DIRECT_SYNC_REQUIRED');
+      equal((await h.store.get('a')).value?.config, relay);
       h.api.default.defaults.adapter = async () => { throw new Error('offline'); };
-      await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), /offline/);
+      await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!),
+        (error: unknown) => error instanceof h.provision.ProvisioningError &&
+          error.diagnostic.code === 'SSH_DIRECT_SYNC_REQUIRED');
     } finally { cleanup(); }
   });
 
-  it('keeps the offline path of an unprotected managed SSH profile without ignoring HTTP denial', async () => {
+  it('never requests Internet for a complete direct cache but still enforces a known remote refusal', async () => {
     const h = await harness();
     const { cleanup } = await setup(h, null);
     try {
@@ -473,68 +494,45 @@ describe('native configuration vault and lossless migration', () => {
       await h.store.save('a', direct, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a' });
       h.api.default.defaults.adapter = async () => { throw new Error('offline'); };
       equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), direct);
-      h.api.default.defaults.adapter = async request => { throw httpError(request, 403, { code: 'CONFIG_EXHAUSTED' }); };
-      await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!));
+      await apply(h, snapshot('known-denial', 'active', 'exhausted'));
+      await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), /CONFIG_EXHAUSTED/);
     } finally { cleanup(); }
   });
 
-  it('renews only the relay ticket and cannot resurrect or overwrite a replaced profile', async () => {
-    const h = await harness();
-    installConfigVault(h);
-    const { cleanup } = await setup(h);
-    const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
-      sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 60000).toISOString() } };
-    try {
-      assert.equal((await h.store.save('a', relay, { subscriptionId: 'a', configHash: 'hash-a' })).status, 'ok');
-      const requests: string[] = [];
-      const credential = { ticket: 'ddd.eee.fff', expiresAt: new Date(Date.now() + 3600000).toISOString() };
-      h.api.default.defaults.adapter = async request => {
-        requests.push(request.url!);
-        assert.equal(JSON.parse(request.data).ticket, relay.sshRelay.ticket);
-        return { data: credential, status: 200, statusText: 'OK', headers: {}, config: request };
-      };
-      const updated = await h.provision.refreshRelayCredential('a', relay);
-      equal(updated.sshRelay, { version: 1, ...credential });
-      equal(requests, ['/provision/ssh-relay/refresh']);
-      await h.provision.refreshRelayCredential('a', updated);
-      assert.equal(requests.length, 1);
-      await assert.rejects(h.store.replaceRelayCredential('a', relay.sshRelay.ticket, credential), /CHANGED/);
-      await h.store.remove('a');
-      await assert.rejects(h.store.replaceRelayCredential('a', credential.ticket, credential), /CHANGED/);
-      assert.equal((await h.store.get('a')).status, 'missing');
-    } finally { cleanup(); }
-  });
-
-  for (const failure of ['network', 'expired', 'denied', 'deleted'] as const) {
-    it(`handles ${failure} during relay renewal without extending or restoring credentials`, async () => {
+  for (const failure of ['network', 'expired-ticket', 'denied', 'deleted', 'replaced'] as const) {
+    it(`handles ${failure} during direct migration without opening or renewing the old gateway`, async () => {
       const h = await harness();
       const { cleanup } = await setup(h, null);
       try {
         const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
           sshRelay: { version: 1, ticket: 'aaa.bbb.ccc',
-            expiresAt: new Date(Date.now() + (failure === 'expired' ? -1000 : 120000)).toISOString() } };
-        await h.store.save('a', relay, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a' });
+            expiresAt: new Date(Date.now() + (failure === 'expired-ticket' ? -1000 : 120000)).toISOString() } };
+        await h.store.save('a', relay, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a',
+          dataToken: 'synthetic-token' });
+        const direct = { protocol: 'ssh', host: 'provider.invalid', port: 22, username: 'synthetic', password: 'fixture-only' };
         h.api.default.defaults.adapter = async request => {
-          assert.equal(request.url, '/provision/ssh-relay/refresh');
+          assert.equal(request.url, '/provision/activate');
+          assert.equal(request.headers['X-SXB-SSH-Relay'], undefined);
           if (failure === 'deleted') await h.store.remove('a');
-          if (failure === 'denied') throw httpError(request, 403, { code: 'RELAY_TICKET_INVALID' });
+          if (failure === 'replaced') await h.store.save('a', { ...direct, host: 'new-provider.invalid' },
+            { source: 'backend', subscriptionId: 'a', configHash: 'hash-a' });
+          if (failure === 'denied') throw httpError(request, 403, { code: 'CONFIG_EXHAUSTED' });
+          if (failure === 'deleted' || failure === 'replaced') {
+            return { data: sealedDirectProvision(h, direct), status: 200, statusText: 'OK', headers: {}, config: request };
+          }
           throw new AxiosError('timeout of 15000ms exceeded', 'ECONNABORTED', request);
         };
-        if (failure === 'network') {
-          equal(await h.provision.refreshRelayCredential('a', relay), relay);
-          assert.ok(JSON.stringify(h.state.logs).includes('PVN_TIMEOUT'));
-          assert.equal(JSON.stringify(h.state.logs).includes(relay.sshRelay.ticket), false);
-        } else if (failure === 'deleted') {
-          await assert.rejects(h.provision.refreshRelayCredential('a', relay), /RELAY_CREDENTIAL_CHANGED/);
-        } else {
-          await assert.rejects(h.provision.refreshRelayCredential('a', relay), (error: unknown) => {
-            return error instanceof h.provision.ProvisioningError &&
-              error.diagnostic.code === (failure === 'expired' ? 'PVN_TIMEOUT' : 'PVN_HTTP_403');
-          });
-        }
+        await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), (error: unknown) => {
+          return error instanceof h.provision.ProvisioningError &&
+            (failure === 'denied' ? error.diagnostic.code === 'PVN_HTTP_403' :
+              failure === 'deleted' || failure === 'replaced' ? error.diagnostic.code === 'PVN_STORE_FAILED' :
+                error.diagnostic.code === 'SSH_DIRECT_SYNC_REQUIRED');
+        });
         const stored = await h.store.get('a');
         if (failure === 'deleted') assert.equal(stored.status, 'missing');
+        else if (failure === 'replaced') assert.equal(stored.value?.config.host, 'new-provider.invalid');
         else equal(stored.value?.config, relay);
+        assert.equal(JSON.stringify(h.state.logs).includes(relay.sshRelay.ticket), false);
       } finally { cleanup(); }
     });
   }
