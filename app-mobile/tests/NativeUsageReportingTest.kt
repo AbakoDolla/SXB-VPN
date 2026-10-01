@@ -49,6 +49,7 @@ object SxbSecureLogger {
 object SxbVpnService {
     const val BROADCAST_STATUS = "status"
     const val BROADCAST_LOG = "log"
+    fun getCurrentStateSequence() = 0L
 }
 object SxbAccessControl { const val BROADCAST = "access" }
 object SxbRootAccess { const val BROADCAST = "root-access" }

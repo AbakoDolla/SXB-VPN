@@ -21,6 +21,7 @@ private fun payloadScenario(
     responseDelayMs: Long = 0,
     afterClientPrefix: String = "",
     expectedError: String? = null,
+    timeoutMs: Int = 3000,
 ) {
     val expectedRequest = expandSshPayloadTokens(payload, "ssh.example.test", 22, "synthetic-agent", serverName)
     val server = if (tls) {
@@ -66,7 +67,7 @@ private fun payloadScenario(
     try {
         var rejected = false
         try {
-            proxy.connect(null, "ignored", 22, 3000)
+            proxy.connect(null, "ignored", 22, timeoutMs)
             if (waitForClient) {
                 proxy.outputStream.write("SSH-2.0-Client\r\n".toByteArray())
                 proxy.outputStream.flush()
@@ -130,7 +131,7 @@ private fun keylessUpgradeScenarios() {
         reportedResponses() + "\r\n".repeat(33) + banner to "SSH_PREAMBLE_TOO_LARGE",
         reportedResponses() + "<html>fabricated banner\r\n" + banner to "CAPTIVE_PORTAL",
         reportedResponses() + "p".repeat(8193) + "\r\n" + banner to "SSH_PREAMBLE_TOO_LARGE",
-        ("HTTP/1.1 101 Switching Protocols\r\nContent-Length: 65536\r\n\r\n" + "b".repeat(65536)).repeat(3) + banner
+        ("HTTP/1.1 200 OK\r\nContent-Length: 65536\r\n\r\n" + "b".repeat(65536)).repeat(3) + banner
             to "HTTP_CHAIN_TOO_LARGE",
     )) {
         payloadScenario(response, true, false, payload = reportedPayload, expectFailure = true, expectedError = error)
@@ -206,7 +207,7 @@ private fun chainFramingScenarios() {
     payloadScenario("HTTP/1.1 301 Redirect\r\n\r\n", true, false, expectFailure = true)
     payloadScenario(ok + ok, true, false, payload = chainPayload, waitForClient = true)
     // An empty HTTP read used to discard the first byte arriving during the later peek.
-    payloadScenario("SSH-2.0-Synthetic\r\n", true, false, responseDelayMs = 10_100)
+    payloadScenario("SSH-2.0-Synthetic\r\n", true, false, responseDelayMs = 10_100, timeoutMs = 15000)
     val websocketPayload = "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
         "GET /ssh HTTP/1.1[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]" +
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]Sec-WebSocket-Version: 13[crlf][crlf]"
@@ -286,6 +287,22 @@ fun main(args: Array<String>) {
                 reportedResponses() + "Content-Length: 104857600000\r\n\r\n\r\n" + banner,
                 true, false, payload = reportedPayload, expectedTunnel = banner,
             )
+        },
+        "single CONNECT uses the same framed chain and post101 preamble as GET pipelines" to {
+            val body = "synthetic redirect body"
+            payloadScenario(
+                "HTTP/1.1 301 Moved\r\nContent-Length: ${body.length}\r\n\r\n$body" +
+                    "HTTP/1.1 101 Switching Protocols\r\nContent-Length: 104857600000\r\n\r\n" +
+                    "Content-Length: 104857600000\r\n\r\n\r\nSSH-2.0-Synthetic\r\n",
+                true, false,
+            )
+        },
+        "single GET, custom HTTP methods and direct pre-identification lines preserve SSH" to {
+            payloadScenario("HTTP/1.1 100 Continue\r\nContent-Length: 0\r\n\r\n" +
+                "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody" +
+                "Welcome\r\nSSH-2.0-Synthetic\r\n", true, false,
+                payload = "X-TUNNEL / HTTP/1.1[crlf]Host:[host][crlf][crlf]")
+            payloadScenario("Welcome\r\nSSH-2.0-Synthetic\r\n", true, false)
         },
         "reported GET/X/GET payload receives 301/403/101 then legacy WebSocket SSH" to {
             val banner = "SSH-2.0-Synthetic\r\n\u0000\u0081"

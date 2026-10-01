@@ -227,6 +227,52 @@ The probe does not authenticate and an unconfirmed VPS result does not block
 import or mobile startup. Carrier filtering and provider account/session
 restrictions can still differ from the probe's network.
 
+The same bounded reader now handles single CONNECT/ordinary HTTP requests as
+well as pipelines and declared WebSocket upgrades. Informational replies
+(`100`, `101`, `103`) and no-body status codes cannot turn a cosmetic
+Content-Length into an enormous body read. Framed redirects/error bodies are
+still consumed or refused correctly. Legitimate pre-identification notices,
+custom HTTP method tokens, IPv6 `host:port` tokens and literal `...` inside
+real paths/headers are retained; only standalone copy-paste omission lines
+are removed. Declared TLS, its certificate checks, split delays, raw/direct,
+HTTP CONNECT, WS, SlowDNS and explicit UDPGW remain distinct modes.
+
+The server and mobile share the HTTP Custom/SSH Custom decoder, including
+single `CONFIGS` wrappers. SSH share URIs (`ssh://`, `ssh+tls://`,
+`ssh+payload://`, `ssh+payload+tls://`) use the common protocol URI reader.
+Passwords are decoded once, explicit domains/IPv6/ports/SNI/proxy/payload/
+User-Agent/private-key fields remain intact, and multiple-profile imports
+require an explicit selection on mobile rather than dialing an arbitrary
+entry. Existing canonical JSON, SocksIP and recognized Protocols Settings
+remain supported. Unknown encrypted proprietary exports cannot be decrypted
+without their format/key, and unavailable credentials or unsupported server
+algorithms remain explicit failures, not transport successes.
+
+## Android VPN takeover and UI state
+
+Android's `VpnService.onRevoke()` is authoritative: the old TUN has already
+been deactivated by the system. SXB publishes its terminal disconnected state
+before disk/account/reporting or queued engine teardown, closes its outgoing
+SSH carrier/session and cancels reconnects. It does not discard that callback
+merely because `prepare()` still reflects cached consent. Only deferred old
+cleanup is scoped to its original start/attempt so it cannot cancel a new
+explicit connection. No persistent VPN-permission generation lock is added.
+
+Native state broadcasts and runtime/statistics snapshots carry an in-process
+monotonic sequence. The mobile provider treats permission loss globally,
+before profile/access/TLS-switch filters, clears the green/connecting state,
+permission and pending starts, and rejects old events, snapshots and counter
+reads. Foreground reconciliation reads this ownership snapshot before access
+I/O. A native permission check every 500 ms and runtime reads provide a
+fallback if the platform callback is delayed/missed; the callback path itself
+has no artificial waiting period. UI scheduling while JavaScript is suspended
+is still controlled by Android. Only a new explicit permission/start can reopen
+the tunnel. Root approval, quota and usage-ledger authority remain unchanged.
+
+This applies to another VPN actually taking over the same Android user/profile.
+Opening an app without starting its VPN, a separate work-profile VPN, or
+root-mode capture that does not replace the system VPN is not that signal.
+
 Already-installed relay-only profiles contain no supplier credentials.
 They must be provisioned once while the control API is reachable, through
 automatic configuration refresh or an explicit refresh. A migration never

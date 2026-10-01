@@ -228,6 +228,14 @@ private class ReconnectSim(var connected: Boolean = true) {
 }
 
 fun main() {
+    checkCase("SSH preserves literal ellipses in real paths and headers and brackets IPv6 port tokens") {
+        val exact = "GET /a.../b HTTP/1.1[crlf]Host:[host][crlf]User-Agent:literal...[crlf][crlf]"
+        val normalized = SshTransportHarness.normalize(exact)
+        check(normalized.contains("/a.../b") && normalized.contains("User-Agent:literal..."))
+        check(!SshTransportHarness.normalize("GET / HTTP/1.1[crlf]...[crlf]Host:[host][crlf][crlf]").contains("..."))
+        check(SshTransportHarness.tokens("CONNECT [host_port] HTTP/1.1", "2001:db8::1") ==
+            "CONNECT [2001:db8::1]:22 HTTP/1.1")
+    }
     checkCase("SSH uses only the declared TLS mode, including old cached modes") {
         for (prefix in listOf("", "[split]", "[instant_split]", "[delay_split]")) {
             val payload = "${prefix}CONNECT [host_port] HTTP/1.1[crlf]Host: [host][crlf][crlf]"

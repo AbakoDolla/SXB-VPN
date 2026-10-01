@@ -115,12 +115,14 @@ import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
+data class SxbVpnRuntimeSnapshot(val state: String, val stateSequence: Long, val errorCode: String?)
+
 private fun isIpLiteralHost(value: String): Boolean =
     value.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")) || value.contains(':')
 
 private val sshSplitDirective = Regex("\\[(delay_split|instant_split|split)\\]", RegexOption.IGNORE_CASE)
 private val sshRotateDirective = Regex("\\[rotate=([^\\r\\n\\]]*)\\]", RegexOption.IGNORE_CASE)
-private val sshRequestLine = Regex("^[A-Z]+\\s+\\S+\\s+HTTP/\\d(?:\\.\\d)?$", RegexOption.IGNORE_CASE)
+private val sshRequestLine = Regex("^[!#$%&'*+.^_`|~0-9A-Z-]+\\s+\\S+\\s+HTTP/\\d(?:\\.\\d)?$", RegexOption.IGNORE_CASE)
 private const val SXB_SSH_USER_AGENT = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36"
 
 private fun sshUserAgent(cfg: JSONObject): String {
@@ -148,11 +150,12 @@ private fun expandSshPayloadTokens(
     if (rotated.contains("[rotate", ignoreCase = true)) throw java.io.IOException("PAYLOAD_TOKEN_INVALID")
     val randomToken = ByteArray(8).also { random.nextBytes(it) }
         .joinToString("") { "%02x".format(it) }
+    val hostPort = (if (':' in targetHost) "[${targetHost.removeSurrounding("[", "]")}]" else targetHost) + ":$targetPort"
     val replacements = linkedMapOf(
         "[method]" to "CONNECT",
         "[protocol]" to "HTTP/1.0",
-        "[ssh]" to "$targetHost:$targetPort",
-        "[host_port]" to "$targetHost:$targetPort",
+        "[ssh]" to hostPort,
+        "[host_port]" to hostPort,
         "[crlf]" to "\r\n",
         "[lfcr]" to "\n\r",
         "[lf]" to "\n",
@@ -264,11 +267,17 @@ private fun readSshPayloadChain(
         }
         acceptPreamble(value.toString().removeSuffix("\r"), bytesAlreadyCounted = true)
     }
-    fun body(headers: String): String {
+    fun body(headers: String, code: Int): String {
         val lengths = Regex("(?im)^Content-Length\\s*:\\s*([^\\r\\n]+)").findAll(headers).toList()
         val encodings = Regex("(?im)^Transfer-Encoding\\s*:\\s*([^\\r\\n]+)").findAll(headers).toList()
         if (lengths.size > 1 || encodings.size > 1 || (lengths.isNotEmpty() && encodings.isNotEmpty())) {
             throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+        }
+        if (code in 100..199 || code == 204 || code == 304) {
+            if (encodings.isNotEmpty() || lengths.any { !it.groupValues[1].trim().matches(Regex("[0-9]+")) }) {
+                throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+            }
+            return ""
         }
         val result = StringBuilder()
         fun take(count: Int) {
@@ -317,14 +326,14 @@ private fun readSshPayloadChain(
                 // Leave the SSH banner and binary key exchange untouched.
                 return ""
             }
-            if (accepted && (first in 32..126 || first in listOf(9, 10, 13))) {
+            if ((accepted || state.responses == 0) && (first in 32..126 || first in listOf(9, 10, 13))) {
                 skipPreamble()
                 continue
             }
             throw state.pendingRejection ?: java.io.IOException("TUNNEL_REFUSED")
         }
         val statusLine = line()
-        if (!statusLine.startsWith("HTTP/") && accepted) {
+        if (!statusLine.startsWith("HTTP/") && (accepted || state.responses == 0)) {
             acceptPreamble(statusLine)
             continue
         }
@@ -337,15 +346,17 @@ private fun readSshPayloadChain(
             if (next.isEmpty()) break
         }
         val response = headers.toString()
-        val code = Regex("^HTTP/\\d(?:\\.\\d)?\\s+(\\d{3})(?:\\s|\\r)").find(response)
-            ?.groupValues?.get(1)?.toInt() ?: throw java.io.IOException("HTTP_CHAIN_INVALID")
+        val status = Regex("^(HTTP/\\d(?:\\.\\d)?)\\s+(\\d{3})(?:\\s|\\r)").find(response)
+            ?: throw java.io.IOException("HTTP_CHAIN_INVALID")
+        val code = status.groupValues[2].toInt()
         if (code == 101 || code >= 200) state.answeredRequests++
         val location = Regex("(?im)^Location\\s*:\\s*([^\\r\\n]+)").find(response)?.groupValues?.get(1).orEmpty()
         if (listOf("nointernet", "captive", "portal").any { location.contains(it, true) }) {
             throw java.io.IOException("CAPTIVE_PORTAL")
         }
-        // Only an explicitly pipelined payload reaches this parser. Never follow a redirect.
-        onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=${state.responses} status=$code")
+        // The same framing applies to one request and a pipeline; redirects are never followed.
+        if (state.responses == 1) onEvent("[SXB_TRACE] stage=HTTP_RESPONSE status=${status.groupValues[1]} $code")
+        else onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=${state.responses} status=$code")
         val rejection = if (code !in 100..299 && code !in setOf(301, 302, 303, 307, 308)) {
             val errorCode = when (code) {
                 400 -> "HTTP_BAD_REQUEST"
@@ -361,7 +372,7 @@ private fun readSshPayloadChain(
             !Regex("(?im)^Connection\\s*:[^\\r\\n]*\\bclose\\b").containsMatchIn(response) &&
             Regex("(?im)^(Content-Length|Transfer-Encoding)\\s*:").containsMatchIn(response)
         if (rejection != null && !intermediateRefusal) throw rejection
-        val content = body(response)
+        val content = body(response, code)
         if (content.contains("<html", true) && listOf("nointernet", "captive", "portal").any { content.contains(it, true) }) {
             throw java.io.IOException("CAPTIVE_PORTAL")
         }
@@ -676,270 +687,8 @@ private class SxbPayloadProxy(
             return
         }
 
-        // ── 2. Lire la réponse HTTP du serveur (headers jusqu'à \r\n\r\n) ────
-        transportSocket.soTimeout = 10_000
-        val headerBuf = StringBuilder()
-        var responseClosed = false
-        val responseInput = inputStream ?: rawIn
-        inputStream = null
-        try {
-            var b3 = 0; var b2 = 0; var b1 = 0; var limit = 8192
-            while (limit-- > 0) {
-                val b = responseInput.read()
-                if (b == -1) { responseClosed = true; break }
-                headerBuf.append(b.toChar())
-                if (b3 == '\r'.code && b2 == '\n'.code && b1 == '\r'.code && b == '\n'.code) break
-                if (headerBuf.toString().startsWith("SSH-") && b == '\n'.code) break
-                b3 = b2; b2 = b1; b1 = b
-            }
-        } catch (_: SocketTimeoutException) {
-            onEvent("[SXB_TRACE] stage=HTTP_RESPONSE_TIMEOUT timeout_ms=10000")
-        } finally {
-            transportSocket.soTimeout = 0
-        }
-
-        val response = headerBuf.toString()
-        val statusLine = response.substringBefore("\r\n")
-        val statusCode = Regex("^HTTP/\\S+\\s+(\\d{3})").find(statusLine)
-            ?.groupValues?.getOrNull(1)?.toIntOrNull()
-        val logSafeStatus = Regex("^HTTP/\\d(?:\\.\\d)?\\s+\\d{3}").find(statusLine)?.value
-            ?: if (response.startsWith("SSH-")) "SSH_BANNER" else "OTHER"
-        val headerNames = response.split("\r\n")
-            .drop(1)
-            .filter { it.contains(":") }
-            .map { it.substringBefore(":").trim().lowercase(Locale.ROOT) }
-            .distinct()
-            .joinToString(",")
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
-        onEvent("[SXB_TRACE] stage=HTTP_RESPONSE status=$logSafeStatus header_count=${headerNames.split(',').count { it.isNotBlank() }} body_bytes=unknown")
-        onEvent("[SXB_TRACE] stage=HTTP_HEADERS count=${headerNames.split(',').count { it.isNotBlank() }} raw_bytes=${response.length} terminator=${response.endsWith("\r\n\r\n")}")
-
-        // ── 3. Détecter le mode transport ─────────────────────────────────────
-        //   HTTP 101 = WebSocket si trames, sinon façade cosmétique et SSH brut
-        //   HTTP 200 = CONNECT tunnel     → SSH direct sur le même socket
-        //   Réponse vide / "SSH-"         → SSH direct (pas de proxy HTTP)
-        val payloadHeaders = if (requests.size > 1) requests.last()
-            else sshSplitDirective.replace(payload.substringBefore("\r\n\r\n"), "")
-        val hasWsUpgradeHeader = Regex("(?im)^Upgrade\\s*:\\s*websocket\\s*$").containsMatchIn(payloadHeaders)
-        val hasWsKey = Regex("(?im)^Sec-WebSocket-Key\\s*:").containsMatchIn(payloadHeaders)
-        val isWs        = statusCode == 101 &&
-                          (response.contains("websocket", ignoreCase = true) ||
-                           response.contains("Upgrade",   ignoreCase = true)) &&
-                          hasWsUpgradeHeader && hasWsKey && !connectPayload
-        val isConnect   = statusCode == 200 &&
-                          response.contains("Connection established", ignoreCase = true)
-        val isSshBanner = response.startsWith("SSH-")
-        val isEmpty     = response.isBlank()
-        if (isSshBanner) {
-            inputStream = SequenceInputStream(ByteArrayInputStream(response.toByteArray(Charsets.ISO_8859_1)), rawIn)
-            outputStream = rawOut
-            transportSocket.soTimeout = 28_000
-            onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=SSH_BANNER")
-            return
-        }
-        if (isEmpty && responseClosed && connectPort == 443 && !tlsEnabled) {
-            onEvent("[SXB_TRACE] stage=HTTP_PLAINTEXT_CLOSED_443 tls=false")
-            throw java.io.IOException("HTTP_PLAINTEXT_CLOSED_443")
-        }
-        // Charge « CONNECT <cible> » (mode eProxy/SocksIP) = tunnel TCP transparent,
-        // quelle que soit la réponse (101 cosmétique ignoré — voir branche when).
-        val isConnectPayload = connectPayload
-
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_MODE status='$logSafeStatus' isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
-        onEvent("[SXB_TRACE] stage=MODE_CLASSIFIED status=$logSafeStatus ws=$isWs connect200=$isConnect ssh_banner=$isSshBanner empty=$isEmpty connect_payload=$isConnectPayload")
-
-        // ── 4. Lire les premiers octets utiles pour confirmer le mode ─────────
-        val httpTunnelCompatible = statusCode == 101 || isConnect
-        if (!isWs && !isConnect && !isSshBanner && !isEmpty) {
-            // Un CONNECT avec réponse 101 est compatible avec le tunnel brut : le
-            // classifieur doit atteindre le when et ne doit pas fabriquer un portail.
-            // Les réponses 301/302 ou les pages HTML de portail restent toujours
-            // bloquantes, y compris pour un payload CONNECT.
-            val loc = Regex("(?i)location:\\s*(\\S+)").find(response)?.groupValues?.getOrNull(1) ?: ""
-            val body = response.substringAfter("\r\n\r\n", "")
-            val bodyLooksPortal = body.contains("<html", true) &&
-                (body.contains("captive", true) || body.contains("nointernet", true) || body.contains("portal", true))
-            val portal = bodyLooksPortal ||
-                loc.contains("nointernet", true) ||
-                loc.contains("captive", true) ||
-                loc.contains("portal", true)
-
-            // ── Un 2xx SIMPLE est un tunnel ouvert ────────────────────────────
-            //
-            // Seul « 200 Connection established » était reconnu, c'est-à-dire la
-            // réponse d'un proxy à un CONNECT. Or la façon la plus répandue de
-            // monter ce tunnel n'est pas un CONNECT : c'est une requête ordinaire
-            // vers un hôte non facturé —
-            //   GET http://exemple.com HTTP/1.0[crlf]Host: ...[crlf][crlf]
-            // — à laquelle la façade répond « HTTP/1.1 200 OK » tout court, puis
-            // laisse la socket devenir le flux SSH. C'est exactement ce que font
-            // les autres applications d'injection.
-            //
-            // Ce 200 tombait donc dans le refus : on rejetait un tunnel qui venait
-            // de s'ouvrir, avec « pas de tunnel sur cette réponse ». Un 2xx est
-            // désormais accepté et la lecture continue plus bas, où les premiers
-            // octets sont relus et replacés devant le flux.
-            //
-            // La détection de portail reste prioritaire : un portail captif répond
-            // lui aussi 200, avec sa page de connexion. Un 2xx dont le corps
-            // ressemble à un portail est toujours refusé — c'est la PREUVE qui
-            // décide, jamais le code de statut seul.
-            val deuxCentOuvert = statusCode != null && statusCode in 200..299 && !portal
-            val cosmetic101 = statusCode == 101 && !portal
-
-            if (statusLine.startsWith("HTTP/")
-                && !deuxCentOuvert
-                && !cosmetic101
-                && !(isConnectPayload && httpTunnelCompatible)) {
-                val hint = if (portal)
-                    " — portail captif détecté avec preuve HTTP/HTML : rechargez la ligne ou utilisez le Host zéro-rated"
-                else
-                    " — pas de tunnel sur cette réponse : vérifiez le Host zéro-rated et le payload"
-                val errorCode = when {
-                    portal -> "CAPTIVE_PORTAL"
-                    statusCode == 404 || statusCode == 410 -> "HTTP_ENDPOINT_MISSING"
-                    statusCode == 400 -> "HTTP_BAD_REQUEST"
-                    else -> "TUNNEL_REFUSED"
-                }
-                onEvent("[SXB_DEBUG] NON_TUNNEL_HTTP code=$errorCode status=$logSafeStatus proof=$portal")
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] NON_TUNNEL_HTTP code=$errorCode status=$logSafeStatus proof=$portal")
-                throw java.io.IOException("$errorCode HTTP ${statusCode ?: 0}$hint")
-            }
-            if (deuxCentOuvert) {
-                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_2xx_tunnel status=$statusCode")
-            }
-            // Essayer de voir les premiers octets après les headers (ex: début SSH banner)
-            val peekBuf = ByteArray(16)
-            var peekLen = 0
-            try {
-                transportSocket.soTimeout = 3_000
-                peekLen = rawIn.read(peekBuf)
-            } catch (_: SocketTimeoutException) {
-                onEvent("[SXB_TRACE] stage=POST_HEADER_PEEK_TIMEOUT timeout_ms=3000")
-            } finally {
-                transportSocket.soTimeout = 0
-            }
-            // Garde-fou EOF : read() renvoie -1 quand le pair referme juste après les
-            // headers — take(-1) jetait IllegalArgumentException (crash réel du
-            // 2026-07-31 sur portail captif MTN, SxbPayloadProxy.connect:403).
-            if (peekLen < 0) {
-                onEvent("[SXB_DEBUG] FIRST_SERVER_BYTES_EOF — le pair a refermé après les headers")
-                peekLen = 0
-            }
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] FIRST_SERVER_BYTES len=$peekLen")
-
-            // Prépend les octets lus avant le stream réel (ils font partie du banner SSH ou autre)
-            val prependStream: InputStream = if (peekLen > 0)
-                SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn)
-            else rawIn
-            if (cosmetic101 && hasWsUpgradeHeader && hasWsKey && peekLen > 0 &&
-                (peekBuf[0].toInt() and 0xFF) in setOf(0x81, 0x82)) {
-                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=WEBSOCKET_RFC6455 reason=http_101_frame")
-                inputStream = WsInputStream(prependStream, rawOut, onEvent)
-                outputStream = WsOutputStream(rawOut, onEvent)
-            } else {
-                if (cosmetic101) {
-                    onEvent("[SXB_DEBUG] COSMETIC_101_DETECTED — SSH brut après HTTP 101")
-                    onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_101_cosmetic")
-                }
-                inputStream = prependStream
-                outputStream = rawOut
-            }
-            try { transportSocket.soTimeout = 28_000 } catch (_: Exception) {}
-            onEvent("[SXB_TRACE] stage=SSH_BANNER_WAIT timeout_ms=28000")
-            return
-        }
-
-        // ── 4. Lever l'ambiguïté du mode de transport (Peeking) ──────────────
-        // On lit le premier octet après les headers pour savoir si c'est du binaire WS (0x82)
-        // ou du texte SSH ('S'). Indispensable pour les serveurs qui répondent 101
-        // mais envoient du SSH brut (cosmétique) vs les vrais serveurs WebSocket.
-        val peekBuf = ByteArray(1)
-        var peekLen = 0
-        try {
-            transportSocket.soTimeout = 2000
-            peekLen = rawIn.read(peekBuf)
-        } catch (_: SocketTimeoutException) {
-            onEvent("[SXB_TRACE] stage=POST_HEADER_PEEK_TIMEOUT timeout_ms=2000")
-        } finally {
-            transportSocket.soTimeout = 0
-        }
-        val firstByte = if (peekLen > 0) peekBuf[0].toInt() and 0xFF else -1
-        val firstKind = when (firstByte) {
-            'S'.code -> "SSH"
-            'H'.code -> "HTTP"
-            0x81, 0x82 -> "WEBSOCKET"
-            else -> "UNKNOWN"
-        }
-        onEvent("[SXB_TRACE] stage=POST_HEADER_PEEK bytes=$peekLen first_kind=$firstKind")
-
-        when {
-            isSshBanner || isEmpty -> {
-                // Serveur répond SSH directement (pas de proxy intermédiaire)
-                if (isSshBanner) {
-                    onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=SSH_BANNER")
-                    inputStream = SequenceInputStream(
-                        ByteArrayInputStream(response.toByteArray(Charsets.ISO_8859_1)),
-                        rawIn
-                    )
-                } else {
-                    inputStream = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
-                }
-                outputStream = rawOut
-            }
-
-            isConnect -> {
-                // HTTP CONNECT 200 → tunnel TCP transparent, SSH direct
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] HTTP_CONNECT_TUNNEL raw SSH streams")
-                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=CONNECT_RAW reason=http_200")
-                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
-                outputStream = rawOut
-            }
-
-            isConnectPayload -> {
-                // CONNECT n'est jamais interprété comme RFC6455 : le 101 renvoyé
-                // par certains eProxy/SocksIP est cosmétique pour ce type de payload.
-                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — flux SSH brut")
-                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=CONNECT_RAW reason=connect_payload")
-                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
-                outputStream = rawOut
-            }
-
-            isWs -> {
-                // RFC6455 est réservé à un payload GET/Upgrade contenant une clé.
-                // Certains serveurs répondent 101 puis exposent SSH en clair : le
-                // Un second en-tête HTTP (H) est aussi du texte, pas une trame.
-                if (firstByte == 'S'.code || firstByte == 'H'.code) {
-                    onEvent("[SXB_DEBUG] COSMETIC_101_DETECTED — SSH brut détecté après 101")
-                    onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=101_then_ssh_banner")
-                    inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
-                    outputStream = rawOut
-                } else {
-                    onEvent("[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED — trames RFC 6455")
-                    onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=WEBSOCKET_RFC6455 reason=http_101_upgrade")
-                    val baseIn = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
-                    inputStream  = WsInputStream(baseIn, rawOut, onEvent)
-                    outputStream = WsOutputStream(rawOut, onEvent)
-                }
-            }
-
-            else -> {
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] UNKNOWN_RESPONSE_FALLBACK raw streams")
-                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=RAW_FALLBACK reason=unknown_response")
-                inputStream  = rawIn
-                outputStream = rawOut
-            }
-        }
-
-        // ── Timeout SSH banner ────────────────────────────────────────────────
-        // Borner la lecture du banner SSH à 28s (légèrement sous le timeout JSch
-        // de 30s). Sans cette limite, si le proxy MTN accepte la TCP mais n'envoie
-        // rien (payload non reconnu), la lecture SSH bloque indéfiniment et le
-        // watchdog Android coupe après 45s sans que l'erreur soit broadcastée.
-        // Avec soTimeout=28s, JSch reçoit SocketTimeoutException → JSchException
-        // → failVpn() → broadcast status=error → RN clearWatchdog() < 45s.
-        try { transportSocket.soTimeout = 28_000 } catch (_: Exception) {}
-        onEvent("[SXB_TRACE] stage=SSH_BANNER_WAIT timeout_ms=28000")
+        inputStream = deferredRawChain(rawIn, transportSocket, timeout, requests.size.coerceAtLeast(1))
+        outputStream = rawOut
     }
 
     private fun deferredRawChain(
@@ -1324,6 +1073,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         @Volatile var instance: SxbVpnService? = null
         @Volatile private var currentState: String = "disconnected"
+        private val currentStateSequence = AtomicLong(0L)
+        @Volatile private var currentStateErrorCode: String? = null
+        @Volatile private var runtimeSnapshot = SxbVpnRuntimeSnapshot("disconnected", 0L, null)
 
         /**
          * Le tunnel a-t-il DÉJÀ été debout depuis le dernier démarrage demandé ?
@@ -1359,7 +1111,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
         @Volatile private var connectedSinceWallClockMs: Long = 0L
 
         fun getCurrentState() = currentState
-        private fun setCurrentState(s: String) {
+        fun getCurrentStateSequence() = currentStateSequence.get()
+        fun getCurrentStateErrorCode() = currentStateErrorCode
+        fun getRuntimeSnapshot() = runtimeSnapshot
+        @Synchronized private fun setCurrentState(s: String) {
+            val service = instance
+            if (service?.vpnPermissionRevoked?.get() == true && s != "disconnected") return
+            if (s in setOf("connecting", "handshaking", "connected", "retrying") &&
+                (service == null || !service.running.get() || service.vpnPermissionRevoked.get())) return
+            if (currentState == s) return
             if (currentState == "connected" && s != "connected") {
                 // La boucle des débits dort jusqu'à 15 s : l'interrompre évite
                 // qu'un dernier rafraîchissement « connecté » arrive après la
@@ -1378,6 +1138,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 connectedSinceWallClockMs = 0L
             }
             currentState = s
+            currentStateSequence.incrementAndGet()
+            runtimeSnapshot = SxbVpnRuntimeSnapshot(currentState, currentStateSequence.get(), currentStateErrorCode)
         }
 
         /** Durée de la session en cours, en secondes ; 0 si non connecté. */
@@ -1394,6 +1156,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     // ── État du service ───────────────────────────────────────────────────────
     private val running         = AtomicBoolean(false)
+    private val vpnPermissionRevoked = AtomicBoolean(false)
+    private var vpnOwnershipThread: Thread? = null
     /** Vrai uniquement après un startForeground réussi — évite de continuer en arrière-plan sans notification. */
     private val foregroundStarted = AtomicBoolean(false)
     private var tunPfd          : ParcelFileDescriptor? = null
@@ -1512,9 +1276,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // interface de partage pour signifier « en-têtes omis ». Ils ne sont
         // pas une ligne HTTP valide. Supprimer uniquement une ligne composée
         // de ce marqueur, sans toucher aux autres en-têtes du fournisseur.
-        val withoutPlaceholders = normalized
-            .replace("…", "")
-            .replace(Regex("\\.{3,}"), "")
+        val withoutPlaceholders = normalized.replace(
+            Regex("(?m)^[ \\t]*(?:…|\\.{3,})[ \\t]*(?:\\r?\\n|$)"), "")
         if (sshSplitDirective.containsMatchIn(withoutPlaceholders)) {
             val canonical = withoutPlaceholders.replace("\r\n", "\n").replace('\r', '\n').replace("\n", "\r\n")
             val standalone = Regex("(?m)(^|\\r\\n)[ \\t]*(\\[(?:delay_split|instant_split|split)\\])[ \\t]*\\r\\n", RegexOption.IGNORE_CASE)
@@ -1908,7 +1671,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         cleanupStarted.set(false)  // FIX — Réinitialiser le guard cleanup pour cette nouvelle connexion
         connectionTracePolicy.reset()
+        vpnPermissionRevoked.set(false)
+        currentStateErrorCode = null
         running.set(true)
+        broadcastStatus("connecting")
+        startVpnOwnershipMonitor()
         restartAccessObserver()
         if (!startTrafficAccounting()) return START_NOT_STICKY
         startConnectionWatchdog()
@@ -1936,42 +1703,64 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // service et laisserait l'appareil sans réseau, sans notification ni
         // moyen de le débloquer autrement qu'en tuant le processus.
         removeKillSwitchBlackhole()
-        foregroundStarted.set(false); instance = null; super.onDestroy()
+        foregroundStarted.set(false)
+        if (instance === this) instance = null
+        super.onDestroy()
     }
     override fun onRevoke()  {
-        if (android.net.VpnService.prepare(this) == null) return
+        if (instance !== this || vpnPermissionRevoked.getAndSet(true)) return
         val revokedConfig = configJson
         val revokedStartId = derniereCommandeStartId
+        setCurrentState("disconnected")
+        broadcastStatus("disconnected", "VPN_PERMISSION_REQUIRED")
+        if (::autoReconnect.isInitialized) autoReconnect.markStopped("system_vpn_revoke")
+        runCatching { interruptForAccess() }.onFailure { Log.e(TAG, "VPN_REVOKE_INTERRUPT_FAILED") }
+        runCatching { sshTransportSocket?.close() }.onFailure { Log.e(TAG, "VPN_REVOKE_SOCKET_CLOSE_FAILED") }
+        runCatching { sshSession?.disconnect() }.onFailure { Log.e(TAG, "VPN_REVOKE_SSH_CLOSE_FAILED") }
+        runCatching { socks5Server?.close() }.onFailure { Log.e(TAG, "VPN_REVOKE_SOCKS_CLOSE_FAILED") }
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+        SxbSecurityMonitor.record(this, "VPN_REVOKED", revokedConfig)
+        // Only the queued old teardown is conditional; Android's callback is authoritative.
+        if (instance !== this || configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return@post
         synchronized(SxbAccessControl) {
-            if (instance !== this || android.net.VpnService.prepare(this) == null ||
-                configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return
-            if (::autoReconnect.isInitialized) autoReconnect.markStopped("system_vpn_revoke")
-            interruptForAccess()
-            runCatching { sshTransportSocket?.close() }
-            runCatching { sshSession?.disconnect() }
-            runCatching { socks5Server?.close() }
-            setCurrentState("disconnected")
+            if (instance !== this || configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return@post
             try {
-                SxbAccessControl.cancelStarts(this)
+                SxbAccessControl.cancelStarts(this, JSONObject(revokedConfig).optString("accessAttempt"))
             } catch (error: Exception) {
                 Log.e(TAG, "ACCESS_START_CANCEL_FAILED", error)
             }
         }
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-        SxbSecurityMonitor.record(this, "VPN_REVOKED", revokedConfig)
-        // A delayed binder callback must not undo an explicit new permission grant.
-        if (instance !== this || android.net.VpnService.prepare(this) == null ||
-            configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return@post
         // Cancel the original attempt before workers can schedule another start.
         // Permission loss is not logout, account suspension or profile deletion.
         broadcastLog("[SXB] ⚠️ VPN arrêté : autorisation retirée ou autre VPN activé")
-        broadcastStatus("disconnected", "VPN_PERMISSION_REQUIRED")
         cleanup()
         // Le système a repris la main sur l'interface VPN : ne pas la réinstaller.
         removeKillSwitchBlackhole()
         // cleanup uses stopSelf(startId); the base's unconditional stopSelf
         // could destroy a newly queued start command.
         }
+    }
+
+    fun checkVpnOwnership() {
+        if (instance !== this || vpnPermissionRevoked.get() || !running.get()) return
+        if (android.net.VpnService.prepare(this) != null) onRevoke()
+    }
+
+    private fun startVpnOwnershipMonitor() {
+        vpnOwnershipThread?.interrupt()
+        vpnOwnershipThread = Thread({
+            while (running.get() && instance === this && !vpnPermissionRevoked.get()) {
+                try {
+                    checkVpnOwnership()
+                    Thread.sleep(500)
+                } catch (_: InterruptedException) {
+                    break
+                } catch (error: Exception) {
+                    Log.e(TAG, "VPN_OWNERSHIP_CHECK_FAILED", error)
+                    break
+                }
+            }
+        }, "SXB-VpnOwnership").apply { isDaemon = true; start() }
     }
 
     // ── Dispatch protocole ────────────────────────────────────────────────────
@@ -5944,15 +5733,34 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun broadcastStatus(status: String, errorCode: String? = null) {
+        val snapshot = synchronized(Companion) {
+            if (instance !== this || (vpnPermissionRevoked.get() && status != "disconnected")) return
+            if (status in setOf("connecting", "handshaking", "connected", "retrying") &&
+                (!running.get() || vpnPermissionRevoked.get())) return
+            setCurrentState(status)
+            if (currentState != status || (vpnPermissionRevoked.get() && status != "disconnected")) return
+            val terminalCode = errorCode ?: if (status == "disconnected") currentStateErrorCode else null
+            if (currentStateErrorCode != terminalCode) {
+                currentStateErrorCode = terminalCode
+                currentStateSequence.incrementAndGet()
+            }
+            SxbVpnRuntimeSnapshot(currentState, currentStateSequence.get(), currentStateErrorCode)
+                .also { runtimeSnapshot = it }
+        }
         // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
         // Sans ça, les broadcasts intra-app sont silencieusement ignorés.
         val intent = Intent(BROADCAST_STATUS).apply {
-            putExtra("status", status)
-            if (errorCode != null) putExtra("errorCode", errorCode)
+            putExtra("status", snapshot.state)
+            putExtra("stateSequence", snapshot.stateSequence)
+            snapshot.errorCode?.let { putExtra("errorCode", it) }
             if (configJson.isNotEmpty()) {
-                val config = JSONObject(configJson)
-                putExtra("configId", config.optString("configId", ""))
-                putExtra("accessSession", config.optString("accessSession", ""))
+                try {
+                    val config = JSONObject(configJson)
+                    putExtra("configId", config.optString("configId", ""))
+                    putExtra("accessSession", config.optString("accessSession", ""))
+                } catch (error: Exception) {
+                    Log.e(TAG, "VPN_STATUS_CONFIG_INVALID")
+                }
             }
             setPackage(packageName)
         }
@@ -6129,6 +5937,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         trace("CLEANUP_START", "stop_service=$stopService keep_running=$keepRunning state=$currentState")
         if (!keepRunning) running.set(false)
+        if (stopService) vpnOwnershipThread?.interrupt()
         vpnThread?.interrupt()
         notifThread?.interrupt()
         connectionWatchdog?.interrupt()
@@ -6184,12 +5993,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         if (stopService) autoReconnect.reset()
 
-        if (stopService) {
+        if (stopService && instance === this) {
             SxbSecurityMonitor.record(this, "VPN_STOPPED", configJson)
             setCurrentState("disconnected")
             trace("CLEANUP_COMPLETE", "state=$currentState")
             broadcastStatus("disconnected")
-        } else if (keepRunning) {
+        } else if (keepRunning && instance === this && !vpnPermissionRevoked.get()) {
             // Cas Auto-reconnect : garder l'UI en "connecting" ou "retrying"
             // au lieu de retomber en "disconnected"
             setCurrentState("connecting")

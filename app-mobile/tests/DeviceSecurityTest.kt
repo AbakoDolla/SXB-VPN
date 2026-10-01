@@ -111,10 +111,12 @@ fun main(args: Array<String>) {
     val config = """{"securitySessionId":"original","securityGeneration":7,"securityClientId":"client-a","connectionId":"connection-a","usageSessionId":"usage-a","accessAttempt":"attempt-a","password":"synthetic-sensitive","token":"synthetic-sensitive","host":"private.example.invalid"}"""
     val revoked = RevokeHarness().apply { configJson = config }
     revoked.onRevoke()
-    verify(revoked.cancelled == 1 && revoked.interrupted == 1, "permission loss cancels workers before the main-thread queue")
+    verify(revoked.cancelled == 0 && revoked.interrupted == 1, "permission loss stops workers without waiting for disk cancellation")
     verify(revoked.sshTransportSocket?.isClosed == true && revoked.sshSession?.closed == true,
         "permission loss closes the direct SSH transport and session synchronously")
     verify(revoked.nativeState == "disconnected", "another VPN stops the native state before the UI queue")
+    verify(revoked.statuses == listOf("disconnected") && revoked.errorCodes == listOf("VPN_PERMISSION_REQUIRED"),
+        "takeover publishes the terminal UI state before any queued teardown or security write")
     MainQueue.drain()
     verify(revoked.cancelled == 1 && revoked.cleaned == 1 && revoked.blackholeRemoved == 1, "permission loss cancels starts and invokes cleanup once")
     verify(revoked.autoReconnect.reasons == listOf("system_vpn_revoke"), "permission loss disables automatic recovery")
@@ -135,7 +137,7 @@ fun main(args: Array<String>) {
     delayed.derniereCommandeStartId++
     delayed.configJson = config.replace("connection-a", "connection-new")
     MainQueue.drain()
-    verify(delayed.cleaned == 0 && delayed.cancelled == 1, "late callback cannot stop a new permission grant")
+    verify(delayed.cleaned == 0 && delayed.cancelled == 0, "late teardown cannot cancel or stop a new permission grant")
     verify(JSONArray(SxbSecurityMonitor.pending(delayed)).getJSONObject(0).getString("connectionId") == "connection-a",
         "late callback still persists its original event, not the new connection")
     val replaced = RevokeHarness().apply { configJson = config }
@@ -145,7 +147,13 @@ fun main(args: Array<String>) {
     verify(replaced.cleaned == 0 && successor.cleaned == 0, "old service callback cannot stop its successor")
     val stale = RevokeHarness().apply { permissionGranted = true; configJson = config }
     stale.onRevoke(); MainQueue.drain()
-    verify(stale.cleaned == 0 && SxbSecurityMonitor.pending(stale) == "[]", "already-restored permission is not misreported as a new revoke")
+    verify(stale.nativeState == "disconnected" && stale.cleaned == 1,
+        "Android onRevoke is authoritative even when prepare still returns cached consent")
+    val fallback = RevokeHarness().apply { configJson = config; permissionGranted = false }
+    fallback.checkVpnOwnership()
+    verify(fallback.nativeState == "disconnected" && fallback.statuses == listOf("disconnected"),
+        "runtime reads detect lost permission without depending on a delivered Android callback")
+    MainQueue.drain()
 
     val permission = Context().apply { permissionGranted = true }
     val obsolete = permission.getSharedPreferences("sxb_vpn_permission_v1", Context.MODE_PRIVATE)
@@ -169,6 +177,9 @@ fun main(args: Array<String>) {
     }
     val current = nextAttempt()
     AccessHarness.checkStart(permission, current)
+    AccessHarness.cancelStarts(permission, attempt.getString("accessAttempt"))
+    AccessHarness.checkStart(permission, current)
+    verify(true, "a queued old revoke cannot cancel a newly authorized access attempt")
     permissionRejects("old attempt cannot stop or reuse the new explicit connection") {
         AccessHarness.checkStart(permission, attempt)
     }
@@ -192,8 +203,8 @@ fun main(args: Array<String>) {
     verify(failing.interrupted == 1 && failing.sshTransportSocket?.isClosed == true &&
         failing.sshSession?.closed == true && failing.nativeState == "disconnected",
         "access-attempt storage failure cannot delay stopping another-VPN takeover")
-    verify(android.util.Log.messages.contains("ACCESS_START_CANCEL_FAILED"), "failed attempt cancellation is explicitly logged")
     MainQueue.drain()
+    verify(android.util.Log.messages.contains("ACCESS_START_CANCEL_FAILED"), "failed attempt cancellation is explicitly logged")
     java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1")).use { listener ->
         val direct = RevokeHarness().apply {
             configJson = config

@@ -1115,21 +1115,18 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('détecte de manière robuste le mode WebSocket vs SSH brut via peeking d’octet après 101', () => {
-    assert.match(nativeService, /val firstByte = if \(peekLen > 0\) peekBuf\[0\]\.toInt\(\) and 0xFF else -1/);
-    assert.match(nativeService, /if \(firstByte == 'S'\.code \|\| firstByte == 'H'\.code\)/);
-    assert.match(nativeService, /COSMETIC_101_DETECTED/);
-    assert.match(nativeService, /WEBSOCKET_MODE_ACTIVATED/);
-    assert.match(nativeService, /WsInputStream\(baseIn, rawOut, onEvent\)/);
-    assert.match(nativeService, /val cosmetic101 = statusCode == 101 && !portal/);
-    assert.match(nativeService, /&& !cosmetic101\s+&& !\(isConnectPayload && httpTunnelCompatible\)/);
-    assert.match(nativeService, /reason=http_101_cosmetic/);
-    assert.match(nativeService, /reason=http_101_frame/);
+    assert.match(nativeService, /rawIn\.unread\(first\)/);
+    assert.match(nativeService, /'S'\.code -> \{ select\(false\); return \}/);
+    assert.match(nativeService, /0x01, 0x02, 0x81, 0x82, 0x88, 0x89, 0x8A -> \{ select\(true\); return \}/);
+    assert.match(nativeService, /WsInputStream\(rawIn, rawOut, onEvent\)/);
+    assert.match(nativeService, /state\.previousCode == 101/);
+    assert.match(nativeService, /mode=WEBSOCKET_RFC6455 reason=http_chain/);
   });
 
   it('ne court-circuite pas un CONNECT compatible avec HTTP 101', () => {
-    assert.ok(nativeService.includes('val httpTunnelCompatible = statusCode == 101 || isConnect'));
-    assert.ok(nativeService.includes('!(isConnectPayload && httpTunnelCompatible)'));
-    assert.ok(nativeService.includes('reason=connect_payload'));
+    assert.match(nativeService, /inputStream = deferredRawChain\(rawIn, transportSocket, timeout, requests\.size\.coerceAtLeast\(1\)\)/);
+    assert.match(nativeService, /code in 100\.\.199/);
+    assert.doesNotMatch(nativeService, /UNKNOWN_RESPONSE_FALLBACK|val headerBuf = StringBuilder/);
   });
 
   it('respecte les marqueurs du payload et préserve les requêtes HTTP empilées', () => {
@@ -1152,20 +1149,14 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('réserve WebSocket aux vrais handshakes et donne priorité au CONNECT brut', () => {
-    const wsBranch = nativeService.indexOf('isWs ->');
-    const connectPayloadBranch = nativeService.indexOf('isConnectPayload ->');
-    assert.ok(wsBranch >= 0, 'branche WebSocket absente');
-    assert.ok(connectPayloadBranch >= 0, 'branche CONNECT absente');
-    assert.ok(connectPayloadBranch < wsBranch, 'CONNECT doit précéder WebSocket');
-    assert.ok(nativeService.includes('hasWsUpgradeHeader'));
-    assert.ok(nativeService.includes('hasWsKey'));
-    assert.ok(nativeService.includes('!connectPayload'));
-    assert.ok(nativeService.includes('reason=connect_payload'));
+    assert.match(nativeService, /val declaredWebsocket = !connectPayload/);
+    assert.match(nativeService, /if \(requests\.size == 1 && !connectPayload && wantsWebsocket\)/);
+    assert.match(nativeService, /inputStream = deferredRawChain/);
   });
 
   it('négocie le dernier Upgrade pipeliné sans exiger ni injecter une clé WebSocket', () => {
     const start = nativeService.indexOf('if (requests.size > 1) {');
-    const chain = nativeService.slice(start, nativeService.indexOf('transportSocket.soTimeout = 10_000', start));
+    const chain = nativeService.slice(start, nativeService.indexOf('private fun deferredRawChain', start));
     assert.match(chain, /val declaredWebsocket = !connectPayload/);
     assert.match(chain, /selectPipelinedUpgrade\(rawIn, rawOut, transportSocket, timeout, requests\.size\)/);
     assert.doesNotMatch(chain, /Sec-WebSocket-Key|WS_KEY_INJECTED/);
@@ -1190,8 +1181,10 @@ describe('garde-fous contre les régressions Android', () => {
     const disconnected = vpnContext.slice(start, vpnContext.indexOf("s === 'error'", start));
     assert.match(disconnected, /setIsConnected\(false\)/);
     assert.match(disconnected, /setIsConnecting\(false\)/);
-    assert.match(disconnected, /e\?\.errorCode === 'VPN_PERMISSION_REQUIRED'[\s\S]*pendingAutoConnectRef\.current = null/);
-    assert.match(disconnected, /\+\+connectionAttemptRef\.current/);
+    const lost = vpnContext.slice(vpnContext.indexOf('const onVpnPermissionLost'), vpnContext.indexOf('// ── Listener événements natifs VPN'));
+    assert.match(lost, /pendingAutoConnectRef\.current = null/);
+    assert.match(lost, /\+\+connectionAttemptRef\.current/);
+    assert.match(lost, /setHasVpnPermission\(false\)/);
   });
 
   it('mesure les octets sur l’interface TUN et n’ajoute pas le relais SSH', () => {
@@ -1294,8 +1287,8 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('stage=DNS_RESOLVE'));
     assert.ok(nativeService.includes('stage=TCP_CONNECTED'));
     assert.ok(nativeService.includes('stage=PAYLOAD_NORMALIZED'));
-    assert.ok(nativeService.includes('stage=HTTP_HEADERS'));
-    assert.ok(nativeService.includes('stage=MODE_CLASSIFIED'));
+    assert.ok(nativeService.includes('stage=HTTP_CHAIN_RESPONSE'));
+    assert.ok(nativeService.includes('stage=SSH_PREAMBLE_SKIPPED'));
     assert.ok(nativeService.includes('stage=TRANSPORT_SELECTED'));
     assert.ok(nativeService.includes('stage=SSH_BANNER_WAIT'));
     assert.ok(nativeService.includes('trace("TUN_CREATE_START"'));
@@ -1307,14 +1300,13 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('mappe honnêtement les réponses HTTP sans accuser le forfait sans preuve', () => {
-    assert.ok(nativeService.includes('portal -> "CAPTIVE_PORTAL"'));
-    assert.ok(nativeService.includes('statusCode == 404 || statusCode == 410 -> "HTTP_ENDPOINT_MISSING"'));
-    assert.ok(nativeService.includes('statusCode == 400 -> "HTTP_BAD_REQUEST"'));
-    assert.ok(nativeService.includes('throw java.io.IOException("$errorCode HTTP'));
+    assert.ok(nativeService.includes('throw java.io.IOException("CAPTIVE_PORTAL")'));
+    assert.ok(nativeService.includes('404, 410 -> "HTTP_ENDPOINT_MISSING"'));
+    assert.ok(nativeService.includes('400 -> "HTTP_BAD_REQUEST"'));
+    assert.ok(nativeService.includes('java.io.IOException("$errorCode HTTP'));
     assert.ok(nativeService.includes('lower.contains("captive_portal")'));
     assert.ok(nativeService.includes('lower.contains("tunnel_refused")'));
     assert.ok(nativeService.includes("Le serveur n'a pas ouvert de tunnel"));
-    assert.ok(nativeService.includes('proof=$portal'));
     assert.ok(nativeService.includes('HTTP_PLAINTEXT_CLOSED_443'));
     assert.ok(nativeService.includes('HTTP_ENDPOINT_MISSING'));
     assert.ok(nativeService.includes('SSH_ACCOUNT_EXPIRED'));
@@ -1629,7 +1621,7 @@ describe('garde-fous contre les régressions Android', () => {
 
     // Et côté service, une reprise ne repasse JAMAIS par « disconnected » —
     // qui désarmerait le drapeau : le nettoyage partiel annonce « connecting ».
-    const nettoyage = nativeService.slice(nativeService.indexOf('} else if (keepRunning) {'));
+    const nettoyage = nativeService.slice(nativeService.indexOf('} else if (keepRunning && instance === this'));
     assert.match(nettoyage.slice(0, 400), /setCurrentState\("connecting"\)/);
     assert.match(nettoyage.slice(0, 400), /broadcastStatus\("connecting"\)/);
   });
@@ -1644,8 +1636,9 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('préserve le payload complet et ignore seulement une ellipse de copier-coller', () => {
     assert.ok(nativeService.includes('placeholder_removed=${rawPayload.contains("…") || rawPayload.contains("...")}'));
-    assert.ok(nativeService.includes('.replace("…", "")'));
-    assert.ok(nativeService.includes('Regex("\\\\.{3,}")'));
+    assert.match(nativeService, /val withoutPlaceholders = normalized\.replace/);
+    assert.match(nativeService, /\(\?:…\|\\\\\.\{3,\}\)/);
+    assert.doesNotMatch(nativeService, /\.replace\("…", ""\)/);
     assert.ok(nativeService.includes('joinToString("\\r\\n") + "\\r\\n\\r\\n"'));
   });
 
@@ -3242,6 +3235,7 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('le SSH ambigu reste manuel ; seuls les Settings reconnus peuvent être importés', () => {
     const canonical = source('../server/services/canonical-config.ts');
+    const customSsh = source('../server/services/ssh-import.ts');
     const routes = source('../server/routes/vpn-profiles.ts');
     const api = source('../artifacts/sxb-dashboard/src/api/vpn-profiles.ts');
     const vue = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
@@ -3250,8 +3244,9 @@ describe('garde-fous contre les régressions Android', () => {
     // réimportent, et l'API reste compatible.
     assert.match(canonical, /'http-custom-json'/);
     for (const field of ['ADDRESS', 'PAYLOAD ENABLED', 'PROXY ENABLED', 'NSSERVER', 'PUBKEY', 'LOCALPORT']) {
-      assert.match(canonical, new RegExp(field.replace(' ', '\\s')), `champ HTTP Custom absent : ${field}`);
+      assert.match(customSsh, new RegExp(field.replace(' ', '\\s')), `champ HTTP Custom absent : ${field}`);
     }
+    assert.match(canonical, /readCustomSshProfile\(obj\)/);
     assert.match(canonical, /export function parseImportedConfigList/);
     assert.match(routes, /router\.post\('\/import-batch'/);
     assert.match(routes, /await prisma\.\$transaction/);

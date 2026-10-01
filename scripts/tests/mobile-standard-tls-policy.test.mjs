@@ -39,11 +39,13 @@ test('takeover cancels starts and closes TUN and pending SSH before the main UI 
   const revoke = service.match(/^    override fun onRevoke\(\)[\s\S]*?^    }/m)?.[0];
   assert.ok(revoke);
   const synchronous = revoke.slice(0, revoke.indexOf('Handler('));
-  for (const required of ['SxbAccessControl.cancelStarts(this)', 'autoReconnect.markStopped("system_vpn_revoke")',
+  for (const required of ['autoReconnect.markStopped("system_vpn_revoke")',
     'interruptForAccess()', 'sshTransportSocket?.close()', 'sshSession?.disconnect()', 'setCurrentState("disconnected")']) {
     assert.ok(synchronous.includes(required), required);
   }
-  assert.ok(synchronous.indexOf('interruptForAccess()') < synchronous.indexOf('SxbAccessControl.cancelStarts(this)'));
+  assert.ok(synchronous.includes('broadcastStatus("disconnected", "VPN_PERMISSION_REQUIRED")'));
+  assert.doesNotMatch(synchronous, /VpnService\.prepare/);
+  assert.ok(revoke.includes('SxbAccessControl.cancelStarts(this, JSONObject(revokedConfig)'));
   const interrupt = service.match(/^    fun interruptForAccess\(\)[\s\S]*?^    }/m)?.[0];
   assert.match(interrupt, /tunPfd\?\.close\(\)/);
   const access = read('app-mobile/modules/android-native/SxbAccessControl.kt');
@@ -56,7 +58,9 @@ test('takeover cancels starts and closes TUN and pending SSH before the main UI 
   assert.match(start, /previous\?\.stopForAccess\(\)/);
   const js = read('app-mobile/contexts/VpnContext.tsx');
   assert.match(js, /hasPerm \|\| await SxbVpnNative\.requestVpnPermission\(\)/);
-  assert.match(js, /if \(e\?\.errorCode === 'VPN_PERMISSION_REQUIRED'\)[\s\S]*?pendingAutoConnectRef\.current = null/);
+  const loss = js.slice(js.indexOf('const onVpnPermissionLost'), js.indexOf('// ── Listener événements natifs VPN'));
+  assert.match(loss, /pendingAutoConnectRef\.current = null/);
+  assert.match(js, /if \(e\?\.errorCode === 'VPN_PERMISSION_REQUIRED'\) \{\s*onVpnPermissionLost\(\)/);
 });
 
 test('the release still waits for compatible offline bootstrap, not a compiled certificate key', async () => {
