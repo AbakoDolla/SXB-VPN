@@ -113,9 +113,21 @@ test('probe supports chunked replies without scanning their bodies as another re
 });
 
 test('single-request WebSocket completion matches native headers; ping and fragmented SSH are decoded', async t => {
-  let pong;
+  let pong, maskedBanner = false;
   const { report, request } = await fixture(t, socket => {
-    socket.on('data', bytes => { pong = bytes; });
+    let received = Buffer.alloc(0);
+    socket.on('data', bytes => {
+      received = Buffer.concat([received, bytes]);
+      while (received.length >= 6) {
+        const size = received[1] & 127;
+        if (received.length < size + 6) return;
+        assert.ok(received[1] & 128);
+        const frame = received.subarray(0, size + 6);
+        received = received.subarray(size + 6);
+        if (frame[0] === 0x8a) pong = frame;
+        else if (frame[0] === 0x82) maskedBanner = true;
+      }
+    });
     const first = Buffer.from(ssh.slice(0, 10)), rest = Buffer.from(ssh.slice(10));
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
     socket.write(Buffer.concat([Buffer.from([0x89, 1, 7, 0x02, first.length]), first,
@@ -127,6 +139,7 @@ test('single-request WebSocket completion matches native headers; ping and fragm
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.ok(pong && pong[0] === 0x8a && pong[1] === 0x81);
   assert.equal(pong[6] ^ pong[2], 7, 'client pong is masked');
+  assert.ok(maskedBanner);
 });
 
 test('probe follows delayed HTTP responses and client-first raw SSH under one bounded deadline', async t => {
@@ -143,6 +156,34 @@ test('probe follows delayed HTTP responses and client-first raw SSH under one bo
     socket.once('close', () => clearTimeout(timer));
   }, { timeoutMs: 4000 });
   assert.equal(report.verdict, 'transport_ok');
+});
+
+test('a WebSocket ping before a client-first SSH identification does not leave the probe stalled', async t => {
+  let firstBannerMasked = false;
+  const { report } = await fixture(t, socket => {
+    let received = Buffer.alloc(0);
+    socket.on('data', bytes => {
+      received = Buffer.concat([received, bytes]);
+      while (received.length >= 6) {
+        const size = received[1] & 127;
+        if (received.length < size + 6) return;
+        assert.ok(received[1] & 128, 'probe frames must be masked');
+        const opcode = received[0] & 15, mask = received.subarray(2, 6);
+        const value = Buffer.from(received.subarray(6, size + 6));
+        for (let index = 0; index < value.length; index++) value[index] ^= mask[index % 4];
+        received = received.subarray(size + 6);
+        if (opcode === 2) {
+          assert.equal(value.toString(), 'SSH-2.0-SXB_Transport_Probe\r\n');
+          firstBannerMasked = true;
+          socket.write(Buffer.concat([Buffer.from([0x82, ssh.length]), Buffer.from(ssh)]));
+        }
+      }
+    });
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    socket.write(Buffer.from([0x89, 1, 7]));
+  }, { timeoutMs: 3000 });
+  assert.equal(report.verdict, 'transport_ok');
+  assert.ok(firstBannerMasked);
 });
 
 test('dashboard probe labels consume the API event field and never turn a VPS-only result into an invalid host', () => {

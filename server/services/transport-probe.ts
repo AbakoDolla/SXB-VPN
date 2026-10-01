@@ -352,6 +352,10 @@ async function probeWsTunnel(
       }
       if (websocket || accepted && wantsWebsocket && [1, 2, 129, 130, 136, 137, 138].includes(first)) {
         websocket = true;
+        if (!bannerSent) {
+          await writeFrame(2, Buffer.from('SSH-2.0-SXB_Transport_Probe\r\n'));
+          bannerSent = true;
+        }
         let prefix = '';
         let fragmented = false;
         for (let frame = 0; frame < 32; frame++) {
