@@ -56,12 +56,12 @@ export function substitutePayload(
   return template
     .replace(/\[method\]/gi, 'CONNECT')
     .replace(/\[protocol\]/gi, 'HTTP/1.0')
-    .replace(/\[ssh\]/gi, `${host}:${port}`)
+    .replace(/\[ssh\]/gi, `${host.includes(':') ? `[${host.replace(/^\[|\]$/g, '')}]` : host}:${port}`)
     .replace(/\[crlf\]/gi, '\r\n')
     .replace(/\[lfcr\]/gi, '\n\r')
     .replace(/\[lf\]/gi, '\n')
     .replace(/\[cr\]/gi, '\r')
-    .replace(/\[host_port\]/gi, `${host}:${port}`)
+    .replace(/\[host_port\]/gi, `${host.includes(':') ? `[${host.replace(/^\[|\]$/g, '')}]` : host}:${port}`)
     .replace(/\[port\]/gi, String(port))
     .replace(/\[host\]/gi, host)
     .replace(/\[ua\]/gi, userAgent)
@@ -221,7 +221,7 @@ async function probeWsTunnel(
   steps: ProbeStep[],
 ): Promise<void> {
   const requests = payload.replace(/\[(?:delay_split|instant_split|split)\]/gi, '').split('\r\n\r\n')
-    .filter(request => /^[A-Z]+\s+\S+\s+HTTP\/\d(?:\.\d)?$/i.test(request.split('\r\n')[0].trim()));
+    .filter(request => /^[!#$%&'*+.^_`|~0-9A-Z-]+\s+\S+\s+HTTP\/\d(?:\.\d)?$/i.test(request.split('\r\n')[0].trim()));
   if (requests.length > 16) throw new Error('PAYLOAD_REQUEST_LIMIT');
   const finalHeaders = requests.at(-1) || '';
   const wantsWebsocket = !/^CONNECT /i.test(finalHeaders) && /^upgrade\s*:\s*websocket\s*$/im.test(finalHeaders);
@@ -284,10 +284,14 @@ async function probeWsTunnel(
     }
     return fail('SSH_PROBE_HEADERS_TOO_LARGE');
   };
-  const consumeBody = async (headers: string): Promise<void> => {
+  const consumeBody = async (headers: string, code: number): Promise<void> => {
     const lengths = [...headers.matchAll(/^content-length\s*:\s*([^\r\n]+)/gim)];
     const encodings = [...headers.matchAll(/^transfer-encoding\s*:\s*([^\r\n]+)/gim)];
     if (lengths.length > 1 || encodings.length > 1 || lengths.length && encodings.length) fail('SSH_PROBE_FRAMING_INVALID');
+    if (code >= 100 && code < 200 || code === 204 || code === 304) {
+      if (encodings.length || lengths.some(item => !/^\d+$/.test(item[1].trim()))) fail('SSH_PROBE_FRAMING_INVALID');
+      return;
+    }
     const chunks: Buffer[] = [];
     let size = 0;
     const take = async (count: number) => {
@@ -393,7 +397,7 @@ async function probeWsTunnel(
         return;
       }
       if (first !== 72) {
-        if (!accepted || first !== 9 && first !== 10 && first !== 13 && (first < 32 || first > 126)) {
+        if ((!accepted && responses > 0) || first !== 9 && first !== 10 && first !== 13 && (first < 32 || first > 126)) {
           fail(pendingRefusal ? 'SSH_PROBE_HTTP_REFUSED' : 'SSH_PROBE_INVALID');
         }
         const text = await line();
@@ -433,7 +437,7 @@ async function probeWsTunnel(
       });
       if (rejected && !intermediateRefusal) fail('SSH_PROBE_HTTP_REFUSED');
       if (/^location:[^\r\n]*(?:captive|portal|nointernet)/im.test(headers)) fail('SSH_PROBE_PORTAL');
-      await consumeBody(headers);
+      await consumeBody(headers, code);
       pendingRefusal = rejected;
       advertisedWebsocket = code === 101 && wantsWebsocket && /^upgrade\s*:\s*websocket\s*$/im.test(headers) &&
         /^connection\s*:[^\r\n]*\bupgrade\b/im.test(headers);

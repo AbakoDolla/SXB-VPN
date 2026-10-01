@@ -1,6 +1,7 @@
 import { isAdmin as isAdminRole } from '../lib/roles';
 import { brouillonDepuisProfil, MARQUEUR_SECRET } from '../lib/brouillonReimport';
 import { readProtocolBundle, validateProtocolOptions } from '../../../../server/services/protocol-bundle';
+import { readProtocolUri } from '../../../../server/services/protocol-uri';
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from '../contexts/I18nContext';
 import { usePermissions } from '../contexts/PermissionsContext';
@@ -228,7 +229,8 @@ type JsonEditorInfo = {
  * « JSON invalide » et désactivait le bouton de préflight : une URI restait
  * donc impossible à valider depuis le dashboard alors que le backend la gère.
  */
-const SHARE_URI_SCHEMES: Array<{ re: RegExp; label: string }> = [
+const SHARE_URI_SCHEMES: Array<{ re: RegExp; label?: string; labelKey?: string }> = [
+  { re: /^ssh(?:\+payload)?(?:\+tls|\+ssl)?:\/\//i, labelKey: 'configurations.ssh.uriProtocol' },
   { re: /^vless:\/\//i,           label: 'VLESS' },
   { re: /^vmess:\/\//i,           label: 'VMess' },
   { re: /^trojan:\/\//i,          label: 'Trojan' },
@@ -247,6 +249,24 @@ const SHARE_URI_SCHEMES: Array<{ re: RegExp; label: string }> = [
  */
 function inspectShareUri(raw: string, protoLabel: string, lineCount: number, t: Translate): JsonEditorInfo {
   const text = raw.trim();
+  if (/^ssh/i.test(text)) {
+    try {
+      const parsed = readProtocolUri(text);
+      if (!parsed) throw new Error('SSH_URI_INVALID');
+      const host = String(parsed.config.host), port = Number(parsed.config.port);
+      return {
+        valid: true, isUri: true, lineCount,
+        label: t('configurations.editor.uriDetected', { protocol: protoLabel }),
+        detail: t('configurations.editor.server', {
+          address: `${host.includes(':') ? `[${host}]` : host}:${port}`,
+        }),
+      };
+    } catch {
+      return { valid: false, isUri: true, lineCount,
+        label: t('configurations.editor.uriIncomplete', { protocol: protoLabel }),
+        detail: t('configurations.ui.expectedUri') };
+    }
+  }
   const authority = text.match(/^[a-z0-9+]+:\/\/(?:[^@/?#]*@)?([^:/?#]+)(?::(\d+))?/i);
   const address = authority?.[1] ?? '';
   const port = authority?.[2] ?? '';
@@ -324,7 +344,7 @@ function inspectJsonEditor(raw: string, t: Translate): JsonEditorInfo {
     } catch { /* pas une souscription base64 : poursuivre la détection JSON */ }
   }
   const scheme = SHARE_URI_SCHEMES.find(s => s.re.test(raw.trim()));
-  if (scheme) return inspectShareUri(raw, scheme.label, lineCount, t);
+  if (scheme) return inspectShareUri(raw, scheme.labelKey ? t(scheme.labelKey) : scheme.label || '', lineCount, t);
   if (/^\s*\[Interface\]/im.test(raw)) {
     return { valid: true, isUri: true, lineCount, label: t('configurations.ui.wireguardDetected'), detail: t('configurations.ui.wireguardHint') };
   }

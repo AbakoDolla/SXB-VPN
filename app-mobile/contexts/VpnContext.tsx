@@ -607,6 +607,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // si JSch était encore bloqué dans session.connect(). Ce marqueur empêche
   // l'ancienne tentative de ressusciter l'UI après une annulation.
   const acceptNativeConnectedRef = useRef(false);
+  const nativeStateSequenceRef = useRef(0);
+  const vpnPermissionRevokedRef = useRef(false);
   /**
    * Valeur courante de `autoReconnect`, lisible depuis l'écouteur natif.
    *
@@ -977,12 +979,45 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const onVpnPermissionLost = useCallback(() => {
+    if (!vpnPermissionRevokedRef.current) {
+      ++connectionAttemptRef.current;
+      addStepLog('permission', 'step_permission_denied', 'error', 'VPN_PERMISSION_REQUIRED');
+      addLog('VPN_PERMISSION_REQUIRED');
+    }
+    vpnPermissionRevokedRef.current = true;
+    pendingAutoConnectRef.current = null;
+    echelonRelanceRef.current = false;
+    basculeEnCoursRef.current = false;
+    acceptNativeConnectedRef.current = false;
+    stopWatchdog();
+    stopEchelon();
+    stopTrafficPolling();
+    setHasVpnPermission(false);
+    setVpnState('disconnected');
+    setIsConnected(false);
+    setIsConnecting(false);
+    setTrafficStats(DEFAULT_STATS);
+    void AsyncStorage.setItem('@sxb_vpn_connected', 'false').catch(reportAccessSyncError);
+    void flushUsageRef.current({ final: true }).catch(reportAccessSyncError);
+  }, [addLog, addStepLog, stopWatchdog, stopEchelon]);
+
   // ── Listener événements natifs VPN ──────────────────────────────────────────
   useEffect(() => {
     if (!vpnEmitter) return;
 
     const stateSub = vpnEmitter.addListener('onVpnStateChange', (e: any) => {
       const s = (e?.state || e?.status || 'disconnected').toLowerCase();
+      const sequence = Number(e?.stateSequence);
+      if (Number.isSafeInteger(sequence) && sequence > 0) {
+        if (sequence <= nativeStateSequenceRef.current) return;
+        nativeStateSequenceRef.current = sequence;
+      }
+      if (e?.errorCode === 'VPN_PERMISSION_REQUIRED') {
+        onVpnPermissionLost();
+        return;
+      }
+      if (vpnPermissionRevokedRef.current && s !== 'disconnected') return;
       const authority = getAccessState().authority;
       if (e?.accessSession && e.accessSession !== authority?.session) return;
       if (e?.configId && runningProfileRef.current && e.configId !== runningProfileRef.current.configId) return;
@@ -1095,13 +1130,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         refreshAccountState(activeConfigIdRef.current).catch(reportAccessSyncError);
         startTrafficPolling(); // S'assurer que le polling tourne
       } else if (s === 'disconnected') {
-        if (e?.errorCode === 'VPN_PERMISSION_REQUIRED') {
-          ++connectionAttemptRef.current;
-          pendingAutoConnectRef.current = null;
-          echelonRelanceRef.current = false;
-          basculeEnCoursRef.current = false;
-          addStepLog('permission', 'step_permission_denied', 'error', 'VPN_PERMISSION_REQUIRED');
-        }
         stopWatchdog();
         stopEchelon();
         setVpnState('disconnected');
@@ -1123,6 +1151,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         if (avancerEchelon(connectionAttemptRef.current, e?.errorCode)) return;
         stopEchelon();
         setVpnState('error');
+        setIsConnected(false);
         acceptNativeConnectedRef.current = false;
         const erreur = analyserErreurVpn(e.errorCode);
         addStepLog('error', erreur.cle, 'error', erreur.code);
@@ -1139,7 +1168,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => { stateSub.remove(); logSub.remove(); };
-  }, [addLog, inscrireFaitMoteur, refreshAccountState, stopWatchdog, stopEchelon, avancerEchelon, noterProgresMoteur, privacyEncryptionMessage]);
+  }, [addLog, inscrireFaitMoteur, refreshAccountState, stopWatchdog, stopEchelon, avancerEchelon, noterProgresMoteur, privacyEncryptionMessage, onVpnPermissionLost]);
 
   const startTrafficPolling = useCallback(() => {
     if (!IS_ANDROID || !SxbVpnNative) return;
@@ -1155,7 +1184,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       try {
+        const pollAttempt = connectionAttemptRef.current;
         const stats = await SxbVpnNative.getTrafficStats();
+        const runtime = stats?.vpnRuntime;
+        const sequence = Number(runtime?.stateSequence);
+        if (runtime?.errorCode === 'VPN_PERMISSION_REQUIRED' &&
+            (!Number.isSafeInteger(sequence) || sequence >= nativeStateSequenceRef.current)) {
+          if (Number.isSafeInteger(sequence)) nativeStateSequenceRef.current = sequence;
+          onVpnPermissionLost();
+          return;
+        }
+        if (pollAttempt !== connectionAttemptRef.current || vpnPermissionRevokedRef.current ||
+            (Number.isSafeInteger(sequence) && sequence < nativeStateSequenceRef.current)) return;
         // ⚡ On ne redessine que si un compteur a VRAIMENT bougé.
         //
         // Cet objet était reconstruit toutes les deux secondes, y compris
@@ -1231,9 +1271,24 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     if (!IS_ANDROID || !SxbVpnNative?.getVpnState) return;
     try {
       const attempt = connectionAttemptRef.current;
+      const runtime = SxbVpnNative.getVpnRuntimeState
+        ? await SxbVpnNative.getVpnRuntimeState()
+        : { state: await SxbVpnNative.getVpnState() };
+      const sequence = Number(runtime?.stateSequence);
+      if (Number.isSafeInteger(sequence) && sequence < nativeStateSequenceRef.current) return;
+      if (runtime?.errorCode === 'VPN_PERMISSION_REQUIRED') {
+        if (Number.isSafeInteger(sequence) && sequence <= nativeStateSequenceRef.current &&
+            !vpnPermissionRevokedRef.current && vpnStateRef.current === 'connecting') return;
+        if (Number.isSafeInteger(sequence)) nativeStateSequenceRef.current = sequence;
+        onVpnPermissionLost();
+        return;
+      }
+      if (vpnPermissionRevokedRef.current) return;
+      const state = String(runtime?.state || 'disconnected').toLowerCase();
       const control = await syncNativeAccessState();
-      const state = String(await SxbVpnNative.getVpnState()).toLowerCase();
       if (attempt !== connectionAttemptRef.current || disconnectInFlightRef.current) return;
+      if (Number.isSafeInteger(sequence) && sequence < nativeStateSequenceRef.current) return;
+      if (Number.isSafeInteger(sequence)) nativeStateSequenceRef.current = sequence;
       if (control?.activeProfile) runningProfileRef.current = control.activeProfile;
       const authority = getAccessState().authority;
       if (blocksDevice(selectDeviceAccess(authority)) ||
@@ -1258,12 +1313,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       ) return;
       const connected = state === 'connected';
       const connecting = state === 'connecting' || state === 'handshaking' || state === 'retrying';
+      if (connected) acceptNativeConnectedRef.current = autoReconnectRef.current;
       setVpnState(state);
       setIsConnected(connected);
       setIsConnecting(connecting);
 
       if (connected || connecting) {
         const stats = await SxbVpnNative.getTrafficStats();
+        if (attempt !== connectionAttemptRef.current || vpnPermissionRevokedRef.current ||
+            (Number.isSafeInteger(sequence) && sequence < nativeStateSequenceRef.current)) return;
         if (typeof stats.usageSessionId === 'string') sessionIdRef.current = stats.usageSessionId;
         setTrafficStats({
           uploadBytes: stats.uploadBytes || 0,
@@ -1285,7 +1343,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // L'événement natif suivant réconciliera l'état ; ne jamais inventer une
       // déconnexion sur une simple erreur de lecture.
     }
-  }, [startTrafficPolling, stopTrafficPolling]);
+  }, [startTrafficPolling, stopTrafficPolling, onVpnPermissionLost]);
 
   useEffect(() => {
     void syncNativeRuntime();
@@ -2002,6 +2060,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           setIsConnecting(false);
           return;
         }
+        if (attemptId !== connectionAttemptRef.current) return;
+        vpnPermissionRevokedRef.current = false;
+        setHasVpnPermission(true);
         addStepLog('permission', 'step_permission_granted', 'done');
         if (!hasPerm) addLog('✅ Permission VPN accordée');
 

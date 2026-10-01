@@ -15,6 +15,7 @@ import { lireProfilSocksIp } from './socksIpProfile';
 import { lireProfilV2rayN } from './v2rayNProfile';
 import { readProtocolBundle, validateShadowsocksKey, validateProtocolOptions, hasWireguardEndpoints } from '../../server/services/protocol-bundle';
 import { translateXrayToSingbox } from '../../server/services/xray-translate';
+import { readCustomSshProfiles } from '../../server/services/ssh-import';
 
 export type SupportedProtocol =
   | 'ssh' | 'ssh+payload'
@@ -182,6 +183,8 @@ function extraValidation(
   switch (proto) {
     case 'ssh':
     case 'ssh+payload':
+      if (obj.userAgent !== undefined && (typeof obj.userAgent !== 'string' || obj.userAgent.length > 1024 ||
+          /[^\t\x20-\x7e]/.test(obj.userAgent))) errors.push('SSH : User-Agent ASCII sur une seule ligne requis (1024 caractères maximum)');
       if (obj.port !== undefined) validatePort(obj.port, errors);
       if (obj.sshRelay !== undefined && !isSshRelayConfig(obj)) errors.push('SSH : passerelle invalide');
       if (!isSshRelayConfig(obj) && !obj.password && !obj.privateKeyBase64) {
@@ -337,7 +340,7 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
     // Les URI de partage sont converties vers le même modèle plat que les JSON
     // canoniques. Ainsi, l’interface mobile, le cache offline et le moteur
     // Android utilisent exactement les mêmes champs techniques.
-    if (/^(vless|vmess|ss|trojan|hysteria2|hy2):\/\//i.test(trimmed)) {
+    if (/^(vless|vmess|ss|trojan|hysteria2|hy2|ssh(?:\+payload)?(?:\+tls|\+ssl)?):\/\//i.test(trimmed)) {
       try {
         const parsed = parseVpnUri(trimmed);
         if (!parsed) throw new Error('URI VPN non reconnue');
@@ -356,7 +359,7 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
       } catch {
         return {
           valid: false, protocol: null,
-          errors: ['Format invalide — utilisez un JSON ou une URI VLESS, VMess, Trojan, Shadowsocks ou Hysteria2'],
+          errors: ['Format invalide — utilisez un JSON ou une URI SSH, VLESS, VMess, Trojan, Shadowsocks ou Hysteria2'],
           warnings, config: null,
         };
       }
@@ -366,6 +369,12 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
   }
 
   try {
+    const customSsh = readCustomSshProfiles(obj);
+    if (customSsh) {
+      if (customSsh.length !== 1) throw new Error('Export SSH multiple : choisissez un profil avant de le connecter');
+      warnings.push(...customSsh[0].warnings);
+      obj = customSsh[0].config;
+    }
     const bundle = readProtocolBundle(obj);
     if (bundle) {
       obj = bundle.config;
@@ -500,6 +509,8 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
   }
 
   // 5. Vérifier champs obligatoires
+  if ((protocol === 'ssh' || protocol === 'ssh+payload') && obj.tls === true &&
+      !obj.sni && typeof obj.host === 'string' && obj.host) obj = { ...obj, sni: obj.host };
   const required = REQUIRED_FIELDS[protocol];
   for (const field of required) {
     if (obj[field] === undefined || obj[field] === null || obj[field] === '') {

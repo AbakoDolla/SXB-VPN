@@ -767,6 +767,7 @@ describe('provider traffic report lifecycle', () => {
       useCallback: <T,>(callback: T) => callback,
       isConnected: true, isConnecting: false, IS_ANDROID: true,
       connectionAttemptRef: ref(0), pendingAutoConnectRef: ref<string | null>(null),
+      nativeStateSequenceRef: ref(0), vpnPermissionRevokedRef: ref(false), onVpnPermissionLost: () => {},
       disconnectInFlightRef: ref(false), lastStopAttemptRef: ref(0), acceptNativeConnectedRef: ref(true),
       basculeEnCoursRef: ref(false), reportTimerRef: ref(null),
       runningProfileRef: ref<{ configId: string } | null>({ configId: 'old-profile' }),

@@ -49,7 +49,8 @@ export function vmessShareProfile(shared: Record<string, any>): ProtocolUri {
 /** Standard share URIs, shared by server/mobile; VLESS keeps its established parser. */
 export function readProtocolUri(raw: string): ProtocolUri | null {
   const text = raw.trim();
-  const scheme = text.match(/^(vmess|ss|trojan|hysteria2|hy2):\/\//i)?.[1]?.toLowerCase();
+  if (/^ssh/i.test(text) && /[\r\n]/.test(text)) throw new Error('URI SSH : choisissez une seule configuration');
+  const scheme = text.match(/^(vmess|ss|trojan|hysteria2|hy2|ssh(?:\+payload)?(?:\+tls|\+ssl)?):\/\//i)?.[1]?.toLowerCase();
   if (!scheme) return null;
   const body = text.slice(text.indexOf('://') + 3);
   if (scheme === 'vmess') {
@@ -70,6 +71,47 @@ export function readProtocolUri(raw: string): ProtocolUri | null {
     const equal = part.indexOf('=');
     query.set(decode(equal < 0 ? part : part.slice(0, equal)).toLowerCase(),
       decode((equal < 0 ? '' : part.slice(equal + 1)).replace(/\+/g, ' ')));
+  }
+  if (scheme.startsWith('ssh')) {
+    const at = authority.lastIndexOf('@');
+    if (at < 1) throw new Error('URI SSH : utilisateur et serveur requis');
+    const credentials = authority.slice(0, at), colon = credentials.indexOf(':');
+    const username = decode(colon < 0 ? credentials : credentials.slice(0, colon));
+    const password = colon < 0 ? '' : decode(credentials.slice(colon + 1));
+    const flag = (key: string): boolean => {
+      const value = query.get(key);
+      if (value === undefined || value === '') return false;
+      if (!['true', 'false', '1', '0'].includes(value.toLowerCase())) throw new Error('URI SSH : option booleenne invalide');
+      return ['true', '1'].includes(value.toLowerCase());
+    };
+    const tls = /tls|ssl/.test(scheme) || flag('tls');
+    const payload = query.get('payload') || '';
+    const mode = query.get('transport') || (scheme.includes('payload') || payload ? (tls ? 'payload-tls' : 'payload') : tls ? 'tls' : 'direct');
+    if (!['direct', 'tls', 'payload', 'payload-tls', 'http-connect', 'slowdns'].includes(mode)) throw new Error('URI SSH : transport non pris en charge');
+    let endpoint = authority.slice(at + 1);
+    if (/^\[[^\]]+\]$/.test(endpoint) || !endpoint.includes(':')) endpoint += `:${tls ? 443 : 22}`;
+    const config: Record<string, any> = {
+      protocol: ['payload', 'payload-tls', 'http-connect'].includes(mode) ? 'ssh+payload' : 'ssh',
+      ...parseEndpoint(endpoint), username, password, sshTransport: mode, tls,
+    };
+    if (mode === 'tls' || mode === 'payload-tls') config.tls = true;
+    if (payload) config.payload = payload;
+    if (mode === 'http-connect') config.proxyEnabled = true;
+    if (mode === 'slowdns') config.slowDns = true;
+    if (flag('insecure')) config.insecure = true;
+    for (const key of ['sni', 'userAgent', 'proxyHost', 'dns', 'nameServer', 'slowDnsPublicKey', 'privateKeyBase64',
+      'privateKeyPassphrase', 'fingerprint', 'udpMode', 'udpGatewayHost']) {
+      const value = query.get(key.toLowerCase());
+      if (value !== undefined) config[key] = value;
+    }
+    for (const key of ['proxyPort', 'timeoutMs', 'localPort', 'udpGatewayPort']) {
+      const value = query.get(key.toLowerCase());
+      if (value !== undefined) {
+        if (!/^\d+$/.test(value)) throw new Error('URI SSH : option numerique invalide');
+        config[key] = Number(value);
+      }
+    }
+    return { config, name };
   }
   const fullBase64 = scheme === 'ss' && !authority.includes('@');
   const combined = fullBase64 ? decodeBase64(authority) : authority;

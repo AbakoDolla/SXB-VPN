@@ -272,6 +272,7 @@
     "reimportSecretsPending": "Le brouillon contient encore un marqueur « à ressaisir ». Renseignez la valeur réelle : l’enregistrer tel quel casserait la configuration."
   },
   "ssh": {
+    "uriProtocol": "SSH",
     "detected": "Format SSH ambigu : utilisez le formulaire ou un export Settings reconnu.",
     "detectedHint": "Ouvrez la saisie manuelle et reportez l’hôte, le port, l’utilisateur, le mot de passe et, si besoin, le payload. Vous validez ainsi exactement ce que l’application utilisera.",
     "openManual": "Ouvrir la saisie SSH",

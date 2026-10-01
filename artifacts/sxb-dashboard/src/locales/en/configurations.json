@@ -272,6 +272,7 @@
     "reimportSecretsPending": "The draft still contains a “to re-enter” placeholder. Fill in the real value: saving it as-is would break the configuration."
   },
   "ssh": {
+    "uriProtocol": "SSH",
     "detected": "Ambiguous SSH format: use the form or a recognized Settings export.",
     "detectedHint": "Open manual entry and fill in the host, port, user, password and, if needed, the payload. You then validate exactly what the app will use.",
     "openManual": "Open SSH entry",

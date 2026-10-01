@@ -43,7 +43,7 @@ async function rollout(db, options) {
   const next = {
     id: current?.id || randomUUID(), versionCode: options.build.versionCode, versionName: options.build.versionName,
     apkUrl: APK_URL, apkSha256: options.build.apkSha256,
-    notes: 'SSH : domaines conservés, User-Agent navigateur commun au dashboard et à l’app, en-têtes résiduels après HTTP 101 correctement consommés avant la bannière SSH. Sonde complète 301/403/101/200 sans modification du payload. SSH direct, contrôle root, quotas et arrêt lors du remplacement par un autre VPN conservés.',
+    notes: 'SSH : lecteur commun CONNECT/GET/payloads empilés, imports JSON/SSH Custom et URI SSH, TLS déclaré conservé. Remplacement par un autre VPN : arrêt natif et état déconnecté publiés sans attendre le nettoyage ; anciennes réponses ignorées. Contrôle root, quotas et SSH direct conservés.',
     minSupportedCode: 0, forceUpdate: false, active: true,
     targetRoles: current?.targetRoles ?? ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
     targetDeviceIds: [], publishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),

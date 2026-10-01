@@ -132,6 +132,8 @@ class Handler(looper: Looper) { fun post(action: () -> Unit) { MainQueue.work.ad
 `);
   const revoke = source('SxbVpnService.kt').match(/^    override fun onRevoke\(\)[\s\S]*?^    }/m)?.[0];
   assert.ok(revoke?.includes('VPN_REVOKED'), 'Production onRevoke missing');
+  const ownership = source('SxbVpnService.kt').match(/^    fun checkVpnOwnership\(\)[\s\S]*?^    }/m)?.[0];
+  assert.ok(ownership?.includes('onRevoke()'), 'Production ownership fallback missing');
   const access = source('SxbAccessControl.kt');
   const permissionMethods = ['checkStart', 'prepareStart', 'cancelStarts'].map(name => {
     const method = access.match(new RegExp(`^    fun ${name}\\([\\s\\S]*?^    }`, 'm'))?.[0];
@@ -166,7 +168,7 @@ import org.json.JSONObject
 // Identity transform is intentional: only queue behavior, not Keystore encryption, is under test.
 object KeystoreManager { fun encrypt(value: String) = value; fun decrypt(value: String) = value }
 object SxbAccessControl {
-  fun cancelStarts(context: Context) {
+  fun cancelStarts(context: Context, expectedAttempt: String? = null) {
     (context as RevokeHarness).cancelled++
     if (context.cancelFails) throw IllegalStateException("ACCESS_START_CANCEL_FAILED")
   }
@@ -175,7 +177,9 @@ class Reconnector { val reasons = mutableListOf<String>(); fun markStopped(reaso
 class CloseableHarness { var closed = false; fun close() { closed = true }; fun disconnect() { closed = true } }
 class RevokeHarness : android.net.VpnService() {
   companion object { var instance: RevokeHarness? = null; const val TAG = "test" }
-  var configJson: String? = null
+  var configJson: String = ""
+  val vpnPermissionRevoked = java.util.concurrent.atomic.AtomicBoolean(false)
+  val running = java.util.concurrent.atomic.AtomicBoolean(true)
   var derniereCommandeStartId = 1
   lateinit var autoReconnect: Reconnector
   var cancelled = 0
@@ -197,6 +201,7 @@ class RevokeHarness : android.net.VpnService() {
   fun setCurrentState(value: String) { nativeState = value }
   fun removeKillSwitchBlackhole() { blackholeRemoved++ }
 ${revoke}
+${ownership}
 }
 `);
   const jar = path.join(temp, 'device-security.jar'), samples = path.join(temp, 'proofs.json');

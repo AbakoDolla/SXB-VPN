@@ -173,7 +173,8 @@ object SxbAccessControl {
     }
 
     @Synchronized
-    fun cancelStarts(context: Context) {
+    fun cancelStarts(context: Context, expectedAttempt: String? = null) {
+        if (expectedAttempt != null && allowedAttempt != expectedAttempt) return
         allowedAttempt = null
         check(prefs(context).edit().remove("attempt").commit()) { "ACCESS_STORAGE_ERROR" }
     }

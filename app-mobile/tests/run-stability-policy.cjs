@@ -66,6 +66,8 @@ ${sshMethods.join('\n')}
         sshTransportStrategies(JSONObject(), payload, "ssh.example.test", 443, tls, "ssh.example.test")
             .map { it.mode to it.tls }
     fun rejectsIdentityFailure(error: Throwable): Boolean = isTlsIdentityFailure(error)
+    fun normalize(payload: String): String = normalizePayload(payload, "ssh.example.test", 22)
+    fun tokens(payload: String, host: String): String = expandSshPayloadTokens(payload, host, 22, "Synthetic-UA/1")
 }
 `);
   const base64Harness = path.join(temp, 'AndroidBase64Harness.kt');

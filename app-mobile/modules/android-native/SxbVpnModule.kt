@@ -127,6 +127,8 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         "distribution" to SxbPrivacyPolicy.distribution(reactApplicationContext),
         "sshDirectVersion" to 1,
         "rootApprovalVersion" to 1,
+        "vpnRuntimeVersion" to 1,
+        "sshImportVersion" to 2,
     )
 
     @ReactMethod
@@ -327,7 +329,26 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     // ── getVpnState ───────────────────────────────────────────────────────────
     @ReactMethod
     fun getVpnState(promise: Promise) {
-        promise.resolve(SxbVpnService.getCurrentState())
+        try {
+            SxbVpnService.instance?.checkVpnOwnership()
+            promise.resolve(SxbVpnService.getCurrentState())
+        } catch (error: Exception) { promise.reject("VPN_STATE_UNAVAILABLE", "VPN ownership could not be confirmed", error) }
+    }
+
+    private fun vpnRuntimeState(): WritableMap {
+        SxbVpnService.instance?.checkVpnOwnership()
+        val snapshot = SxbVpnService.getRuntimeSnapshot()
+        return Arguments.createMap().apply {
+            putString("state", snapshot.state)
+            putDouble("stateSequence", snapshot.stateSequence.toDouble())
+            snapshot.errorCode?.let { putString("errorCode", it) }
+        }
+    }
+
+    @ReactMethod
+    fun getVpnRuntimeState(promise: Promise) {
+        try { promise.resolve(vpnRuntimeState()) }
+        catch (error: Exception) { promise.reject("VPN_STATE_UNAVAILABLE", "VPN ownership could not be confirmed", error) }
     }
 
     // Lecture passive de l'état système, sans permission ni demande d'exemption.
@@ -376,6 +397,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 // l'application est fermée, contrairement à un compteur JS.
                 putDouble("connectedSeconds", (stats["connectedSeconds"] ?: 0L).toDouble())
                 service?.usageSessionId()?.let { putString("usageSessionId", it) }
+                putMap("vpnRuntime", vpnRuntimeState())
             }
             promise.resolve(map)
         } catch (e: Exception) {
@@ -663,6 +685,8 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         statusReceiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, i: Intent?) {
                 val status = i?.getStringExtra("status") ?: return
+                val sequence = i.getLongExtra("stateSequence", 0)
+                if (sequence < SxbVpnService.getCurrentStateSequence()) return
                 if (status == "connected") {
                     SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTED)
                 }
@@ -670,6 +694,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 val p = Arguments.createMap().apply { 
                     putString("status", status)
                     putString("state", status) 
+                    putDouble("stateSequence", sequence.toDouble())
                     i.getStringExtra("errorCode")?.let { putString("errorCode", it) }
                     i.getStringExtra("configId")?.let { putString("configId", it) }
                     i.getStringExtra("accessSession")?.let { putString("accessSession", it) }
