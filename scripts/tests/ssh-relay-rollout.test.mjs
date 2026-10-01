@@ -82,6 +82,9 @@ test('inspect proves the pinned key and real transfer without mutation; changes 
   const result = await rollout.prepareRollout({ mode: 'inspect' }, request, deps);
   assert.equal(result.verifiedFingerprint, fingerprint);
   assert.deepEqual(result.transfer, transfer);
+  const direct = await rollout.prepareRollout({ mode: 'inspect-direct', profileId: profile.id }, request, deps);
+  assert.equal(direct.mode, 'inspect-direct');
+  assert.equal(direct.verifiedFingerprint, fingerprint);
   for (const input of [{ ...enable, confirmed: false }, { ...enable, expectedHash: '' }, { ...enable, profileId: '' }]) {
     await assert.rejects(rollout.prepareRollout(input, request, deps), /CONFIRMATION_REQUIRED/);
   }
@@ -330,6 +333,12 @@ test('operator probe verifies real gateway forwarding, provider pin, HTTPS ident
   provider.listen(0, '127.0.0.1'); await once(provider, 'listening');
   t.after(async () => { for (const peer of peers) peer.end(); await new Promise(resolve => provider.close(resolve)); });
   const real = {
+    openRelayUpstream: async (_source, signal) => {
+      const socket = net.connect(provider.address().port, '127.0.0.1');
+      signal.addEventListener('abort', () => socket.destroy(), { once: true });
+      await once(socket, 'connect');
+      return socket;
+    },
     installSshRelay: (server, options) => mod.exports.installSshRelay(server, {
       ...options, open: async () => { const socket = net.connect(provider.address().port, '127.0.0.1'); await once(socket, 'connect'); return socket; },
     }),
@@ -348,6 +357,19 @@ test('operator probe verifies real gateway forwarding, provider pin, HTTPS ident
   assert.equal(requests, 1);
   healthy = false;
   await assert.rejects(rollout.verifyTransfer(upstream, real, Client, certificate), /HEALTH_RESPONSE_INVALID/);
+  healthy = true;
+  const direct = await rollout.verifyDirectTransfer(upstream, real, Client, certificate);
+  assert.equal(direct.usesCentralGateway, false);
+  assert.equal(direct.providerTlsEnabled, false);
+  assert.equal(direct.publicPageVerified, true);
+  assert.ok(direct.uploadBytes > 0 && direct.downloadBytes > 0);
+  const verifiedPasswords = passwords;
+  await assert.rejects(rollout.verifyDirectTransfer({ ...upstream, fingerprint }, real, Client, certificate), /HOST_KEY_MISMATCH/);
+  assert.equal(passwords, verifiedPasswords, 'direct inspection must verify the provider before password authentication');
+  await assert.rejects(rollout.verifyDirectTransfer({ ...upstream, password: 'synthetic-refused' }, real, Client, certificate), /AUTH_REFUSED/);
+  await assert.rejects(rollout.verifyDirectTransfer(upstream, real, Client), /DESTINATION_TLS_FAILED/);
+  healthy = false;
+  await assert.rejects(rollout.verifyDirectTransfer(upstream, real, Client, certificate), /HEALTH_INVALID/);
 });
 
 test('the mutating workflow is explicit, manual, pinned and serialized with production deployments', () => {
@@ -359,4 +381,5 @@ test('the mutating workflow is explicit, manual, pinned and serialized with prod
   assert.equal(workflow.jobs.rollout.if, "github.ref == 'refs/heads/main'");
   assert.equal(workflow.jobs.rollout.environment.name, 'production');
   assert.equal(workflow.jobs.rollout.steps.at(-1).with.fingerprint, '${{ secrets.VPS_SSH_HOST_FINGERPRINT }}');
+  assert.ok(workflow.on.workflow_dispatch.inputs.mode.options.includes('inspect-direct'));
 });

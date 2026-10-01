@@ -6,10 +6,10 @@ on:
     inputs:
       mode:
         type: choice
-        options: [inspect, enable, disable]
+        options: [inspect, inspect-direct, enable, disable]
         default: inspect
         required: true
-        description: Inspect is read-only; enable/disable change one profile's relay access.
+        description: Inspect modes are read-only; inspect-direct uses the supplier without a central gateway.
       profile_id:
         type: string
         description: Exact profile ID returned by inspect (required for changes).

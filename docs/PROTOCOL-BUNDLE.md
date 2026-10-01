@@ -221,6 +221,14 @@ used or offered by the new APK, and new provisioning never issues a relay
 configuration. This compatibility route does not force existing or future
 direct SSH profiles through the gateway.
 
+The manual SSH workflow's read-only `inspect-direct` mode verifies the original
+supplier's host key, authenticates directly and fetches a verified HTTPS health
+response through its forwarding channel, without creating an SXB gateway.
+It reports only public IDs/hashes, byte counts and bounded diagnostic codes,
+including authentication/account/forwarding refusals. It never changes a
+profile, account quota or the gateway policy. HTTPS for the destination health
+page is not an extra TLS wrapper around the provider's ordinary SSH transport.
+
 ## Historical opt-in SSH gateway
 
 The following describes the older APK 187 and earlier gateway architecture,

@@ -3,7 +3,7 @@ const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
 const tls = require('node:tls');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash, timingSafeEqual } = require('node:crypto');
 const { createRequire } = require('node:module');
 const { execFileSync } = require('node:child_process');
 
@@ -128,9 +128,9 @@ async function selectionMetadata(candidates, subscriptions) {
 }
 
 async function prepareRollout({ mode, profileId, expectedHash, confirmed }, request, deps) {
-  if (!['inspect', 'enable', 'disable'].includes(mode) ||
+  if (!['inspect', 'inspect-direct', 'enable', 'disable'].includes(mode) ||
       (profileId && !ID.test(profileId)) || (expectedHash && !HASH.test(expectedHash))) throw new Error('ROLLOUT_INPUT_INVALID');
-  if (mode !== 'inspect' && (!confirmed || !profileId || !expectedHash)) throw new Error('ROLLOUT_CONFIRMATION_REQUIRED');
+  if (!['inspect', 'inspect-direct'].includes(mode) && (!confirmed || !profileId || !expectedHash)) throw new Error('ROLLOUT_CONFIRMATION_REQUIRED');
   const rows = await deps.profiles(profileId);
   if (rows.length > 100) throw new Error('ROLLOUT_PROFILE_SCOPE_TOO_LARGE');
   const selected = selectProfile(rows, request, deps.api);
@@ -153,6 +153,78 @@ async function prepareRollout({ mode, profileId, expectedHash, confirmed }, requ
     throw new Error('ROLLOUT_TRANSFER_FAILED');
   }
   return { ...selected, canonical, mode, verifiedFingerprint: verified.verifiedFingerprint, transfer };
+}
+
+/** Read-only supplier authentication and HTTPS transfer, without a loopback SXB gateway. */
+async function verifyDirectTransfer(upstream, api, Client, healthCa) {
+  const abort = new AbortController(), client = new Client();
+  const expected = Buffer.from(upstream.fingerprint.slice(7), 'base64');
+  let socket, stream, request, agent, timer, rejectedKey = false, accountExpired = false;
+  try {
+    socket = await api.openRelayUpstream(upstream, abort.signal);
+    await new Promise((resolve, reject) => {
+      timer = setTimeout(() => {
+        abort.abort();
+        reject(new Error('DIRECT_SSH_TRANSFER_TIMEOUT'));
+      }, 30000);
+      client.once('banner', message => { accountExpired = /\baccount\b.{0,40}\bexpired\b/i.test(message); });
+      client.once('error', error => reject(new Error(rejectedKey ? 'DIRECT_SSH_HOST_KEY_MISMATCH'
+        : accountExpired ? 'DIRECT_SSH_ACCOUNT_EXPIRED'
+          : error.level === 'client-authentication' ? 'DIRECT_SSH_AUTH_REFUSED' : 'DIRECT_SSH_CONNECTION_FAILED')));
+      client.once('close', () => reject(new Error('DIRECT_SSH_CLOSED')));
+      client.once('ready', () => client.forwardOut('127.0.0.1', 0, 'vpnsxb.afrihall.com', 443, (error, channel) => {
+        if (error) { reject(new Error('DIRECT_SSH_CHANNEL_REFUSED')); return; }
+        stream = channel;
+        stream.on('error', () => reject(new Error('DIRECT_SSH_CHANNEL_FAILED')));
+        agent = new https.Agent({ keepAlive: false, maxSockets: 1 });
+        agent.createConnection = options => tls.connect({
+          ...options, socket: channel, servername: 'vpnsxb.afrihall.com', rejectUnauthorized: true,
+          ...(healthCa ? { ca: healthCa } : {}),
+        });
+        request = https.get({
+          hostname: 'vpnsxb.afrihall.com', port: 443, path: `/api/health?relayCheck=${randomUUID()}`,
+          agent, headers: { Connection: 'close', 'Cache-Control': 'no-cache' },
+        }, response => {
+          const chunks = [];
+          let size = 0;
+          response.on('error', () => reject(new Error('DIRECT_SSH_RESPONSE_FAILED')));
+          response.on('aborted', () => reject(new Error('DIRECT_SSH_RESPONSE_TRUNCATED')));
+          response.on('data', chunk => {
+            size += chunk.length;
+            if (size > 65536) {
+              reject(new Error('DIRECT_SSH_RESPONSE_TOO_LARGE'));
+              response.destroy();
+            } else chunks.push(chunk);
+          });
+          response.once('end', () => {
+            let body;
+            try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+            catch { reject(new Error('DIRECT_SSH_HEALTH_INVALID')); return; }
+            if (response.statusCode === 200 && body?.status === 'ok' && body.service === 'sxb-vpn-backend' &&
+                Number.isFinite(Date.parse(body.timestamp)) && Math.abs(Date.now() - Date.parse(body.timestamp)) < 60000) resolve();
+            else reject(new Error('DIRECT_SSH_HEALTH_INVALID'));
+          });
+        });
+        request.on('error', () => reject(new Error('DIRECT_SSH_DESTINATION_TLS_FAILED')));
+      }));
+      client.connect({
+        sock: socket, host: upstream.host, port: upstream.port,
+        username: upstream.username, password: upstream.password,
+        privateKey: upstream.privateKey, passphrase: upstream.passphrase, readyTimeout: 15000,
+        hostVerifier: publicKey => {
+          const actual = createHash('sha256').update(publicKey).digest();
+          rejectedKey = actual.length !== expected.length || !timingSafeEqual(actual, expected);
+          return !rejectedKey;
+        },
+      });
+    });
+    return { publicPageVerified: true, destinationTlsVerified: true, usesCentralGateway: false,
+      providerTlsEnabled: upstream.tls === true, uploadBytes: socket.bytesWritten, downloadBytes: socket.bytesRead };
+  } finally {
+    clearTimeout(timer);
+    abort.abort();
+    request?.destroy(); agent?.destroy(); stream?.destroy(); client.destroy(); socket?.destroy();
+  }
 }
 
 // Exercise the deployed gateway and provider with an operator-only, one-shot
@@ -378,8 +450,19 @@ async function main() {
         stage = 'HOST_KEY';
         return preflight.probeRelayHost(input, { open: api.openRelayUpstream, Client });
       },
-      verifyTransfer: upstream => { stage = 'TRANSFER'; return verifyTransfer(upstream, api, Client); },
+      verifyTransfer: upstream => {
+        stage = 'TRANSFER';
+        return process.env.SXB_RELAY_MODE === 'inspect-direct'
+          ? verifyDirectTransfer(upstream, api, Client) : verifyTransfer(upstream, api, Client);
+      },
     });
+    if (plan.mode === 'inspect-direct') {
+      console.log(JSON.stringify({
+        status: 'direct-ready', profileId: plan.profile.id, configHash: plan.profile.canonicalConfigHash,
+        verifiedFingerprint: plan.verifiedFingerprint, directTransfer: plan.transfer,
+      }));
+      return;
+    }
     if (plan.mode === 'inspect') {
       stage = 'INGRESS';
       await verifyIngress();
@@ -466,7 +549,7 @@ async function main() {
         console.error('ROLLOUT_SELECTION_METADATA_FAILED');
       }
     }
-    console.error(/^(?:ROLLOUT|PREFLIGHT|RELAY)_[A-Z_]+$/.test(error?.message || '') ? error.message : `ROLLOUT_EXECUTION_FAILED_${stage}`);
+    console.error(/^(?:ROLLOUT|PREFLIGHT|RELAY|DIRECT_SSH)_[A-Z_]+$/.test(error?.message || '') ? error.message : `ROLLOUT_EXECUTION_FAILED_${stage}`);
     process.exitCode = 1;
   } finally {
     if (db) {
@@ -477,5 +560,5 @@ async function main() {
 }
 
 module.exports = { PROFILE_SELECT, parseRequest, requestFromProfile, selectProfile, selectionMetadata, editAllowlist, rolloutEnvironment,
-  restartEnvironment, prepareRollout, verifyTransfer, replaceFile, applyRollout };
+  restartEnvironment, prepareRollout, verifyTransfer, verifyDirectTransfer, replaceFile, applyRollout };
 if (require.main === module || !module.parent) main();
