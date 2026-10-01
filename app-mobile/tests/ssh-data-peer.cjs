@@ -5,6 +5,7 @@ const { writeFileSync, readFileSync } = require('node:fs');
 const https = require('node:https');
 const path = require('node:path');
 const { once } = require('node:events');
+const assert = require('node:assert/strict');
 
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const key = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
@@ -137,6 +138,115 @@ function delayedPayloadServer(refuseIntermediateMethod = false) {
 const delayedPayload = delayedPayloadServer();
 const methodRefusalPayload = delayedPayloadServer(true);
 
+const websocketReports = {};
+const reportedRequest = 'GET / HTTP/1.1\r\nHost: batch.example.test\r\n\r\n' +
+  'X / HTTP/1.1\r\nHost: ssh.example.test\r\n\r\n' +
+  'GET / HTTP/1.1\r\nHost: game.example.test\r\nBackend: reports.example.test\r\n' +
+  'Upgrade: websocket\r\nConnection: Upgrade\r\nUser-agent:fixture-agent\r\n\r\n';
+
+function websocketFrame(opcode, bytes) {
+  const prefix = Buffer.alloc(bytes.length < 126 ? 2 : bytes.length < 65536 ? 4 : 10);
+  prefix[0] = 0x80 | opcode;
+  if (bytes.length < 126) prefix[1] = bytes.length;
+  else if (bytes.length < 65536) { prefix[1] = 126; prefix.writeUInt16BE(bytes.length, 2); }
+  else { prefix[1] = 127; prefix.writeBigUInt64BE(BigInt(bytes.length), 2); }
+  return Buffer.concat([prefix, bytes]);
+}
+
+function legacyWebsocketPayloadServer(name, { clientFirst = false, ping = false } = {}) {
+  const report = websocketReports[name] = { requests: 0, exactPayload: false, firstBannerFramed: false,
+    dataFrames: 0, maskedFrames: 0, pongs: 0 };
+  return net.createServer(socket => {
+    let received = Buffer.alloc(0);
+    let frames = Buffer.alloc(0);
+    let target;
+    let timer;
+    socket.on('error', () => socket.destroy());
+    socket.on('close', () => { clearTimeout(timer); target?.destroy(); });
+    const openTarget = () => {
+      target = net.connect(ssh.address().port, '127.0.0.1');
+      target.on('error', () => socket.destroy());
+      target.on('data', bytes => socket.write(websocketFrame(2, bytes)));
+      target.on('end', () => socket.end());
+    };
+    const fail = error => {
+      console.error('SSH_WS_FIXTURE_FAILED', error.message);
+      socket.destroy();
+    };
+    const readFrames = chunk => {
+      try {
+        frames = Buffer.concat([frames, chunk]);
+        while (frames.length >= 2) {
+          assert.equal(frames[0] & 0xf0, 0x80, 'non-final/RSV client frame');
+          assert.ok(frames[1] & 0x80, 'SSH banner/data was sent unmasked or raw');
+          const opcode = frames[0] & 0x0f;
+          assert.ok(opcode === 2 || opcode === 10, 'unexpected client opcode');
+          let length = frames[1] & 0x7f;
+          let offset = 2;
+          if (length === 126) {
+            if (frames.length < 4) return;
+            length = frames.readUInt16BE(2); offset = 4;
+          } else if (length === 127) {
+            if (frames.length < 10) return;
+            const size = frames.readBigUInt64BE(2);
+            assert.ok(size <= 1048576n, 'oversize client frame');
+            length = Number(size); offset = 10;
+          }
+          assert.ok(length <= 1048576 && (opcode !== 10 || length <= 125), 'invalid client frame length');
+          if (frames.length < offset + 4 + length) return;
+          const mask = frames.subarray(offset, offset + 4);
+          const bytes = Buffer.from(frames.subarray(offset + 4, offset + 4 + length));
+          for (let i = 0; i < length; i++) bytes[i] ^= mask[i % 4];
+          frames = frames.subarray(offset + 4 + length);
+          report.maskedFrames++;
+          if (opcode === 10) {
+            assert.ok(ping && bytes.equals(Buffer.from('fixture-ping')), 'invalid pong');
+            report.pongs++;
+            continue;
+          }
+          if (report.dataFrames++ === 0) {
+            assert.ok(bytes.toString('latin1').startsWith('SSH-2.0-'), 'first data frame is not the client SSH banner');
+            report.firstBannerFramed = true;
+          }
+          if (!target) openTarget();
+          target.write(bytes);
+        }
+      } catch (error) { fail(error); }
+    };
+    const readPayload = chunk => {
+      try {
+        received = Buffer.concat([received, chunk]);
+        assert.ok(received.length <= 8192, 'oversize payload');
+        const text = received.toString('latin1');
+        const parts = text.split('\r\n\r\n');
+        if (parts.length < 4) return;
+        const size = Buffer.byteLength(parts.slice(0, 3).join('\r\n\r\n') + '\r\n\r\n', 'latin1');
+        assert.equal(text.slice(0, size), reportedRequest, 'pipelined headers/tokens were changed');
+        assert.equal(received.length, size, 'SSH bytes escaped before HTTP upgrade');
+        report.requests += 3;
+        report.exactPayload = true;
+        socket.off('data', readPayload);
+        socket.on('data', readFrames);
+        const body = '<html>Method not allowed</html>';
+        socket.write('HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\n\r\n' +
+          `HTTP/1.1 403 Forbidden\r\nContent-Length: ${body.length}\r\n\r\n${body}`);
+        timer = setTimeout(() => {
+          if (socket.destroyed) return;
+          socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+          if (ping) socket.write(websocketFrame(9, Buffer.from('fixture-ping')));
+          if (!clientFirst) openTarget();
+        }, 800);
+      } catch (error) { fail(error); }
+    };
+    socket.on('data', readPayload);
+    socket.on('end', () => target?.end());
+  });
+}
+const legacyWebsocketPayload = legacyWebsocketPayloadServer('legacyWebsocketPayloadPort');
+const clientFirstWebsocketPayload = legacyWebsocketPayloadServer('clientFirstWebsocketPayloadPort', { clientFirst: true });
+const pingWebsocketPayload = legacyWebsocketPayloadServer('pingWebsocketPayloadPort', { ping: true });
+const websocketReport = net.createServer(socket => socket.end(JSON.stringify(websocketReports)));
+
 function tls13Blackhole(target) {
   return net.createServer(socket => {
     let buffered = Buffer.alloc(0);
@@ -188,6 +298,8 @@ function tls13Blackhole(target) {
 (async () => {
   await listen(download); await listen(greeting); await listen(upload); await listen(uploadReport);
   await listen(ssh); await listen(payload); await listen(delayedPayload); await listen(methodRefusalPayload);
+  await listen(legacyWebsocketPayload); await listen(clientFirstWebsocketPayload);
+  await listen(pingWebsocketPayload); await listen(websocketReport);
   const parsedKey = utils.parseKey(key);
   if (parsedKey instanceof Error) throw parsedKey;
   const output = require('esbuild').buildSync({
@@ -235,6 +347,10 @@ function tls13Blackhole(target) {
   writeFileSync(process.argv[2], JSON.stringify({
     sshPort: ssh.address().port, payloadPort: payload.address().port, delayedPayloadPort: delayedPayload.address().port,
     methodRefusalPayloadPort: methodRefusalPayload.address().port,
+    legacyWebsocketPayloadPort: legacyWebsocketPayload.address().port,
+    clientFirstWebsocketPayloadPort: clientFirstWebsocketPayload.address().port,
+    pingWebsocketPayloadPort: pingWebsocketPayload.address().port,
+    websocketReportPort: websocketReport.address().port,
     downloadPort: download.address().port, greetingPort: greeting.address().port,
     uploadPort: upload.address().port, uploadReportPort: uploadReport.address().port,
     gatewayPort: gateway.address().port, gatewayReportPort: gatewayReport.address().port,

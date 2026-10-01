@@ -19,6 +19,8 @@ private fun payloadScenario(
     expectedTunnel: String = "SSH-2.0-Synthetic\r\n",
     waitForClient: Boolean = false,
     responseDelayMs: Long = 0,
+    afterClientPrefix: String = "",
+    expectedError: String? = null,
 ) {
     val expectedRequest = expandSshPayloadTokens(payload, "ssh.example.test", 22, "synthetic-agent", serverName)
     val server = if (tls) {
@@ -46,7 +48,7 @@ private fun payloadScenario(
                     val clientBanner = StringBuilder()
                     while (!clientBanner.endsWith("\n")) clientBanner.append(socket.getInputStream().read().also { check(it >= 0) }.toChar())
                     check(clientBanner.toString() == "SSH-2.0-Client\r\n")
-                    socket.getOutputStream().write(expectedTunnel.toByteArray(Charsets.ISO_8859_1))
+                    socket.getOutputStream().write((afterClientPrefix + expectedTunnel).toByteArray(Charsets.ISO_8859_1))
                 }
             }
         } catch (error: Exception) { failure.set(error) }
@@ -75,6 +77,9 @@ private fun payloadScenario(
             }
         } catch (error: IOException) {
             if (!expectFailure) throw error
+            if (expectedError != null) check(error.message == expectedError) {
+                "Expected $expectedError, got ${error.message}"
+            }
             check(physicalSocket?.isClosed == true) { "Failed transport leaked its physical socket" }
             rejected = true
         }
@@ -96,6 +101,46 @@ private fun payloadScenario(
 
 private const val chainPayload = "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
     "CONNECT [host_port] HTTP/1.1[crlf][crlf]"
+
+private const val reportedPayload = "GET / HTTP/1.1[crlf]Host: batch.example.test[crlf][crlf]" +
+    "X / HTTP/1.1[crlf]Host: [host][crlf][crlf]" +
+    "GET / HTTP/1.1[crlf]Host: game.example.test[crlf]Backend: reports.example.test[crlf]" +
+    "Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-agent:[ua][crlf][crlf]"
+
+private fun reportedResponses(): String {
+    val body = "<html>Method not allowed</html>"
+    return "HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\n\r\n" +
+        "HTTP/1.1 403 Forbidden\r\nContent-Length: ${body.length}\r\n\r\n$body" +
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+}
+
+private fun keylessUpgradeScenarios() {
+    val banner = "SSH-2.0-Synthetic\r\n\u0000\u0081"
+    payloadScenario(reportedResponses() + banner, true, false, payload = reportedPayload, expectedTunnel = banner)
+    val cosmetic = "HTTP/1.1 101 Switching Protocols\r\n\r\n"
+    val ok = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
+    payloadScenario(cosmetic, true, false, payload = reportedPayload, waitForClient = true, afterClientPrefix = ok)
+    for ((response, error) in listOf(
+        cosmetic.repeat(17) + banner to "HTTP_CHAIN_TOO_MANY_RESPONSES",
+        cosmetic + "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n" to "TUNNEL_REFUSED HTTP 403",
+        cosmetic + "HTTP/1.1 302 Redirect\r\nLocation: https://captive.example.test/\r\n\r\n" to "CAPTIVE_PORTAL",
+        "HTTP/1.1 403 Forbidden\r\n\r\n" + cosmetic to "TUNNEL_REFUSED HTTP 403",
+        reportedResponses() + "\u0090" to "TUNNEL_REFUSED",
+        ("HTTP/1.1 101 Switching Protocols\r\nContent-Length: 65536\r\n\r\n" + "b".repeat(65536)).repeat(3) + banner
+            to "HTTP_CHAIN_TOO_LARGE",
+    )) {
+        payloadScenario(response, true, false, payload = reportedPayload, expectFailure = true, expectedError = error)
+    }
+    Socket().use { socket ->
+        val state = SshPayloadChainState(1000)
+        val input = java.io.PushbackInputStream(ByteArrayInputStream((cosmetic + banner).toByteArray(Charsets.ISO_8859_1)), 1)
+        check(readSshPayloadChain(input, socket, 1000, {}, stopAtWebsocketUpgrade = true, state = state) == cosmetic)
+        Thread.sleep(1100)
+        check(runCatching { readSshPayloadChain(input, socket, 3000, {}, state = state) }
+            .exceptionOrNull()?.message == "HTTP_CHAIN_TIMEOUT") { "HTTP 101 reset the monotonic chain deadline" }
+    }
+    println("PASS: keyless Upgrade keeps raw/client-first SSH, strips late HTTP and shares response/byte/time bounds across 101")
+}
 
 private fun chainFramingScenarios() {
     val banner = "SSH-2.0-Synthetic\r\n\u0000\u0081"
@@ -226,6 +271,13 @@ fun main(args: Array<String>) {
     println("PASS: startup burst retains connection diagnostics and precise socket-protection failure")
     System.setProperty("sxb.test.store", args[0])
     val regressions = linkedMapOf<String, () -> Unit>(
+        "reported GET/X/GET payload receives 301/403/101 then legacy WebSocket SSH" to {
+            val banner = "SSH-2.0-Synthetic\r\n\u0000\u0081"
+            payloadScenario(
+                reportedResponses() + "\u0082${banner.length.toChar()}$banner",
+                true, false, payload = reportedPayload, expectedTunnel = banner,
+            )
+        },
         "SSH banner preserves the first key-exchange byte" to {
             val bytes = "SSH-2.0-Synthetic\r\n\u0000\u0000\u0082\u00ffbinary"
             payloadScenario(bytes, true, false, expectedTunnel = bytes)
@@ -261,6 +313,7 @@ fun main(args: Array<String>) {
         catch (error: Exception) { failed.add(name); System.err.println("FAIL: $name: ${error.message}") }
     }
     check(failed.isEmpty()) { "SSH transport regressions: ${failed.joinToString()}" }
+    keylessUpgradeScenarios()
     chainFramingScenarios()
     protectFailureScenarios()
     payloadScenario("SSH-2.0-Synthetic\r\n", false, false)
@@ -343,8 +396,11 @@ private fun multiDeviceDirectScenario(peer: JSONObject) {
 }
 
 private fun sshDataScenarios(peer: JSONObject) {
-    for (mode in listOf("direct", "payloadPort", "delayedPayloadPort", "methodRefusalPayloadPort", "slowAuth")) {
+    val websocketModes = listOf("legacyWebsocketPayloadPort", "clientFirstWebsocketPayloadPort", "pingWebsocketPayloadPort")
+    for (mode in listOf("direct", "payloadPort", "delayedPayloadPort", "methodRefusalPayloadPort", "slowAuth") + websocketModes) {
         val payloadMode = mode != "direct"
+        val websocketMode = mode in websocketModes
+        val events = Collections.synchronizedList(mutableListOf<String>())
         val jsch = JSch()
         jsch.setKnownHosts(ByteArrayInputStream("fixture-key ssh-rsa ${peer.getString("hostKey")}\n".toByteArray()))
         val session = jsch.getSession(if (mode == "slowAuth") "fixture-slow" else peer.getString("username"),
@@ -354,14 +410,20 @@ private fun sshDataScenarios(peer: JSONObject) {
         session.setConfig("PreferredAuthentications", "password")
         session.setPassword(peer.getString("password"))
         if (payloadMode) session.setProxy(SxbPayloadProxy(
-            "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
+            if (websocketMode || mode == "payloadPort" || mode == "methodRefusalPayloadPort") reportedPayload
+            else "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
                 "X / HTTP/1.1[crlf]Host: [host][crlf][crlf]" +
                 "GET / HTTP/1.1[crlf]Host: gateway.example.test[crlf][crlf]",
             false, "", "127.0.0.1", peer.getInt(if (mode == "slowAuth") "delayedPayloadPort" else mode), "ssh.example.test", 22,
-            "fixture-agent", false, { true }, onEvent = {},
+            "fixture-agent", false, { true }, onEvent = { events.add(it) },
         ))
         val started = System.nanoTime()
         connectCandidate(session, if (mode == "slowAuth") 20000 else 10000)
+        if (websocketMode) {
+            check(events.any { it.contains("stage=TRANSPORT_SELECTED mode=WEBSOCKET_RFC6455") })
+            check(events.any { it.contains("stage=WS_FRAME_OUT") && it.contains("masked=true") })
+            check(events.none { it.contains("WS_KEY_INJECTED") || it.contains("example.test") || it.contains("fixture-agent") })
+        }
         if (mode == "slowAuth") check((System.nanoTime() - started) / 1_000_000 >= 13000)
         val harness = SocksHarness()
         val server = harness.start(session)
@@ -444,4 +506,15 @@ private fun sshDataScenarios(peer: JSONObject) {
         check(failures.isEmpty()) { "SSH data path ($mode): ${failures.joinToString("; ")}" }
         println("PASS: real SSH/SOCKS $mode rejection, immediate data, 256 KiB upload/download, both half-closes and disconnect")
     }
+    Socket("127.0.0.1", peer.getInt("websocketReportPort")).use { socket ->
+        socket.soTimeout = 3000
+        val report = JSONObject(String(socket.inputStream.readBytes(), Charsets.UTF_8))
+        for (mode in websocketModes) {
+            val stats = report.getJSONObject(mode)
+            check(stats.getInt("requests") == 3 && stats.getBoolean("exactPayload") && stats.getBoolean("firstBannerFramed"))
+            check(stats.getInt("dataFrames") > 0 && stats.getInt("maskedFrames") >= stats.getInt("dataFrames"))
+            check(stats.getInt("pongs") == if (mode == "pingWebsocketPayloadPort") 1 else 0)
+        }
+    }
+    println("PASS: strict legacy WS peers verify unchanged GET/X/GET bytes, masked first SSH banner/data and ping/pong")
 }
