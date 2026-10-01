@@ -235,6 +235,17 @@ The following describes the older APK 187 and earlier gateway architecture,
 not the current client. Its profile policy now affects only historical
 ticket handling; direct configuration delivery is not controlled by it.
 
+The current mobile startup additionally refuses a detected rooted installation
+unless its installation key has a signed dashboard root exception. Only
+Administration > Security Center > Rooted devices can approve or withdraw it,
+using the existing role and unlock boundary. Root approval is separate from
+business/account access and never grants quota. It does not reintroduce a
+gateway, TLS pinning, or HTTP preflight into a valid cached SSH start.
+The compiled dedicated public authority verifies the exception for up to 24 h
+offline; a first approval and later withdrawals require API reachability.
+Root detection is locally observable and bypassable on a compromised process.
+See `SECURITY-LAYER-REPORT.md` for scope, lifecycle and limitations.
+
 The gateway keeps provider credentials, destination, payload and host-key
 fingerprint on the backend. A capable Android binary advertises
 `X-SXB-SSH-Relay: 1`; only profiles explicitly listed in

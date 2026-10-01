@@ -119,11 +119,31 @@ model VpnClient {
   activationSessions ActivationSession[]
   appRegistrations   AppRegistration[]
   redeemedVouchers   Voucher[]           @relation("VoucherRedeemedClient")
+  rootApprovals      RootDeviceApproval[]
 
   @@index([resellerId])
   @@index([managedById])
   @@unique([managedById, deviceId])
   @@map("vpn_clients")
+}
+
+model RootDeviceApproval {
+  keyId       String    @id
+  publicKey   String
+  status      String    @default("pending")
+  revision    Int       @default(1)
+  clientId    String?
+  client      VpnClient? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  deviceModel String?
+  appVersion  String?
+  firstSeenAt DateTime  @default(now())
+  lastSeenAt  DateTime  @default(now())
+  decidedAt   DateTime?
+  decidedById String?
+
+  @@index([clientId])
+  @@index([status, lastSeenAt])
+  @@map("root_device_approvals")
 }
 
 model Reseller {

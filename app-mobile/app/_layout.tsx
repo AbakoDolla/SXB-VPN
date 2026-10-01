@@ -20,6 +20,7 @@ import { AppLockGate } from "@/components/AppLockGate";
 import { PrivacyProvider, usePrivacy } from "@/contexts/PrivacyContext";
 import PrivacyDisclosure from "@/components/PrivacyDisclosure";
 import { accessRedirect } from "@/services/accessPolicy";
+import RootAccessGate from "@/components/RootAccessGate";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -191,11 +192,13 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <LanguageProvider>
             <ThemeProvider>
+              <RootAccessGate>
               <PrivacyProvider>
                 <AuthProvider>
                   <ThemedAppShell />
                 </AuthProvider>
               </PrivacyProvider>
+              </RootAccessGate>
             </ThemeProvider>
           </LanguageProvider>
         </QueryClientProvider>

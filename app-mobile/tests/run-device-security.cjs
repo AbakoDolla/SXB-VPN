@@ -50,6 +50,7 @@ ${headers.replace('store().getKey(ALIAS, null) as java.security.PrivateKey', 'so
 `);
   fixture('AndroidUtil.kt', `package android.util
 object Base64 {
+  const val DEFAULT = 0
   const val NO_PADDING = 1
   const val NO_WRAP = 2
   const val URL_SAFE = 8
@@ -100,6 +101,7 @@ open class Context {
   var apiBase = "https://127.0.0.1/api"
   val packageName = "synthetic.sxb"
   var permissionGranted = false
+  var rootAllowed = true
   val packageManager = android.content.pm.PackageManager(this)
   fun getSharedPreferences(name: String, mode: Int) = preferences.getOrPut(name) { Preferences() }
 }
@@ -143,6 +145,9 @@ import org.json.JSONObject
 import java.util.UUID
 // Business-authority checks are covered by run-access-policy, not this adapter.
 object SxbPrivacyPolicy { fun vpnAllowed(context: Context) = true }
+object SxbRootAccess {
+ fun checkStart(context: Context) { check(context.rootAllowed) { "ROOT_APPROVAL_REQUIRED" } }
+}
 object SxbAccessPolicy { fun block(current: JSONObject, config: JSONObject): String? = null }
 object AccessHarness {
   private var signedOut = false
@@ -199,6 +204,7 @@ ${revoke}
     ...generated,
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbSecurityMonitor.kt'),
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbBackendTls.kt'),
+    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbRootLeasePolicy.kt'),
     path.resolve(__dirname, 'DeviceSecurityTest.kt'),
     '-classpath', jsonJar, '-include-runtime', '-d', jar,
   ]);

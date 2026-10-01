@@ -17,15 +17,18 @@ test('public release waits for the compatible backend without blocking private c
   assert.ok(gate > 0 && gate < release);
   assert.equal(job.steps[gate].if, "github.ref == 'refs/heads/main'");
   const ready = { status: 'ok', service: 'sxb-vpn-backend',
-    capabilities: { mobileTunnelBootstrap: 1, mobileDirectSsh: 1 } };
+    capabilities: { mobileTunnelBootstrap: 1, mobileDirectSsh: 1, mobileRootApproval: 1,
+      mobileRootAuthority: 'a'.repeat(64) } };
   let reads = 0;
-  const options = { attempts: 3, pause: async () => {}, report: () => {} };
+  const options = { attempts: 3, pause: async () => {}, report: () => {}, authorityKeyId: 'a'.repeat(64) };
   await waitForBootstrapBackend(async () => ++reads === 3 ? ready : { status: 'ok' }, options);
   assert.equal(reads, 3);
   for (const read of [
     async () => { throw new Error('synthetic offline'); },
     async () => ({ ...ready, capabilities: { mobileTunnelBootstrap: 0 } }),
     async () => ({ ...ready, capabilities: { mobileTunnelBootstrap: 1 } }),
+    async () => ({ ...ready, capabilities: { mobileTunnelBootstrap: 1, mobileDirectSsh: 1 } }),
+    async () => ({ ...ready, capabilities: { ...ready.capabilities, mobileRootAuthority: 'b'.repeat(64) } }),
     async () => ({ ...ready, status: 'error' }),
     async () => ({ ...ready, service: 'another-backend' }),
   ]) await assert.rejects(waitForBootstrapBackend(read, options), /BOOTSTRAP_BACKEND_NOT_DEPLOYED/);

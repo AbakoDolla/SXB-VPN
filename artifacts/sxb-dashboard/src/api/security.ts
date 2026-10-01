@@ -258,3 +258,29 @@ export const revokeSecuritySession = (token: string, id: string, generation: num
   apiRequest<{ revoked: boolean }>(`/security/sessions/${encodeURIComponent(id)}/revoke`, {
     method: 'POST', body: { generation }, headers: unlockHeaders(token),
   });
+
+export interface RootDevice {
+  keyId: string;
+  status: 'pending' | 'approved' | 'denied';
+  revision: number;
+  deviceModel: string | null;
+  appVersion: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  decidedAt: string | null;
+  client: { id: string; deviceId: string | null; user: { name: string } } | null;
+}
+export interface RootDevicesPage {
+  devices: RootDevice[];
+  total: number;
+  limit: number;
+  offset: number;
+  offlineHours: number;
+  canApproveUnassigned: boolean;
+}
+export const fetchRootDevices = (token: string, query: { status?: string; search?: string; limit?: number; offset?: number }) =>
+  apiRequest<RootDevicesPage>(`/security/root-devices?${queryString(query)}`, { headers: unlockHeaders(token) });
+export const decideRootDevice = (token: string, device: RootDevice, status: 'approved' | 'denied') =>
+  apiRequest<{ keyId: string; status: string; revision: number }>(`/security/root-devices/${device.keyId}/decision`, {
+    method: 'POST', body: { status, revision: device.revision }, headers: unlockHeaders(token),
+  });

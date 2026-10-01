@@ -1,8 +1,10 @@
 const HEALTH_URL = 'https://vpnsxb.afrihall.com/api/health';
+const { readRootAuthority } = require('./root-authority-policy.cjs');
 async function waitForBootstrapBackend(readHealth, {
   attempts = 24,
   pause = () => new Promise(resolve => setTimeout(resolve, 5000)),
   report = message => console.warn(message),
+  authorityKeyId = readRootAuthority().keyId,
 } = {}) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     let health;
@@ -12,7 +14,10 @@ async function waitForBootstrapBackend(readHealth, {
         Number.isSafeInteger(health.capabilities?.mobileTunnelBootstrap) &&
         health.capabilities.mobileTunnelBootstrap >= 1 &&
         Number.isSafeInteger(health.capabilities?.mobileDirectSsh) &&
-        health.capabilities.mobileDirectSsh >= 1) return;
+        health.capabilities.mobileDirectSsh >= 1 &&
+        Number.isSafeInteger(health.capabilities?.mobileRootApproval) &&
+        health.capabilities.mobileRootApproval >= 1 &&
+        health.capabilities.mobileRootAuthority === authorityKeyId) return;
     report(`BOOTSTRAP_BACKEND_CAPABILITY_PENDING attempt=${attempt}`);
     if (attempt < attempts) await pause();
   }

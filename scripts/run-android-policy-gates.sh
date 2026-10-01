@@ -70,6 +70,7 @@ cd "$ROOT/app-mobile"
 # chiffrement qu'il vérifiait n'existe plus.
 node tests/run-access-policy.cjs
 node tests/run-device-security.cjs
+node tests/run-root-access.cjs
 node tests/run-stability-policy.cjs
 node tests/run-ssh-compatibility.cjs
 node scripts/prepare-geosite.cjs

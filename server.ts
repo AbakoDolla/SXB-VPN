@@ -10,6 +10,7 @@ import { config } from "./server/config";
 import { installSshRelay } from "./server/services/ssh-relay";
 import { authorizeSshRelay } from "./server/services/ssh-relay-auth";
 import { MOBILE_TUNNEL_BOOTSTRAP_VERSION, MOBILE_DIRECT_SSH_VERSION } from "./server/services/mobile-connections";
+import { rootAuthorityKeyId } from "./server/services/root-access";
 
 // Import Routers
 import authRouter from "./server/routes/auth";
@@ -117,7 +118,8 @@ async function startServer() {
   app.get("/api/health", (req: Request, res: Response) => {
     res.json({ status: "ok", timestamp: new Date().toISOString(), service: "sxb-vpn-backend",
       capabilities: { mobileTunnelBootstrap: MOBILE_TUNNEL_BOOTSTRAP_VERSION,
-        mobileDirectSsh: MOBILE_DIRECT_SSH_VERSION } });
+        mobileDirectSsh: MOBILE_DIRECT_SSH_VERSION, mobileRootApproval: 1,
+        mobileRootAuthority: rootAuthorityKeyId() } });
   });
 
   // 2. SaaS API Endpoints Gateway Routing

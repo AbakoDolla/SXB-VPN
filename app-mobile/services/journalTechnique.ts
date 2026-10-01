@@ -332,6 +332,8 @@ const ERREURS_VPN = new Map([
   ['HTTP_PLAINTEXT_CLOSED_443', 'log_http_plaintext_443'],
   ['SSH_SOCKET_PROTECT_FAILED', 'log_socket_protect_failed'],
   ['SSH_DIRECT_SYNC_REQUIRED', 'ssh_direct_sync_required'],
+  ['ROOT_APPROVAL_REQUIRED', 'root_approval_required'],
+  ['ROOT_CHECK_UNAVAILABLE', 'root_approval_required'],
   ['SSH_HOST_KEY_FAILED', 'log_ssh_host_key_failed'],
   ['SSH_ALGORITHM_FAILED', 'log_ssh_algorithm_failed'],
   ['SSH_PEER_CLOSED', 'log_ssh_peer_closed'],

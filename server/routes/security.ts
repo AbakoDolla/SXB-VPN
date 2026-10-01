@@ -26,6 +26,7 @@ import { readSecurityPolicy, writeSecurityPolicy } from '../services/security-po
 import { revokeSecuritySession, notifySessionRevoked } from '../services/mobile-session-security';
 import { porteeSousClient, porteeClients } from '../services/portee-donnees';
 import { digest } from '../services/mobile-proof';
+import { listRootDevices, decideRootDevice, RootAccessError } from '../services/root-access';
 import { auditVisibility, securityEventVisibility } from '../services/owner-privacy';
 import {
   SECURITY_UNLOCK_SECONDS,
@@ -430,6 +431,24 @@ router.get('/policy', exigerOuverture, async (_req, res) => {
       try { return res.json(await readSecurityPolicy()); }
       catch { return res.status(503).json({ error: 'SECURITY_POLICY_UNAVAILABLE' }); }
     });
+router.get('/root-devices', exigerOuverture, async (req: AuthenticatedRequest, res) => {
+  try { return res.json(await listRootDevices(req.user!, req.query)); }
+  catch (error) {
+    if (error instanceof RootAccessError) return res.status(error.status).json({ code: error.code });
+    if (error instanceof z.ZodError) return res.status(400).json({ code: 'ROOT_FILTER_INVALID' });
+    console.warn('[security] ROOT_LIST_UNAVAILABLE');
+    return res.status(503).json({ code: 'ROOT_ACCESS_UNAVAILABLE' });
+  }
+});
+router.post('/root-devices/:keyId/decision', exigerOuverture, async (req: AuthenticatedRequest, res) => {
+  try { return res.json(await decideRootDevice(req.user!, String(req.params.keyId), req.body)); }
+  catch (error) {
+    if (error instanceof RootAccessError) return res.status(error.status).json({ code: error.code });
+    if (error instanceof z.ZodError) return res.status(400).json({ code: 'ROOT_DECISION_INVALID' });
+    console.warn('[security] ROOT_DECISION_UNAVAILABLE');
+    return res.status(503).json({ code: 'ROOT_ACCESS_UNAVAILABLE' });
+  }
+});
     router.put('/policy', exigerOuverture, async (req: AuthenticatedRequest, res) => {
       if (!isOwnerRequest(req)) return res.status(403).json({ error: 'errors.auth.forbidden', code: 'OWNER_ONLY' });
       try {

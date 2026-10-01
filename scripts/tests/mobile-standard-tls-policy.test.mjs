@@ -12,7 +12,7 @@ test('incremental and clean manifest generation remove the extra pinning metadat
   const start = plugin.indexOf('function withVpnManifest(');
   const end = plugin.indexOf('function withKotlinSources(', start);
   const context = { URL, process: { env: {} }, withAndroidManifest: (_config, action) => action,
-    console, result: null };
+    rootAuthorityForOrigin: () => 'synthetic-reviewed-authority', console, result: null };
   vm.runInNewContext(`${plugin.slice(start, end)}; result = withVpnManifest({});`, context);
   const app = { 'meta-data': [
     { $: { 'android:name': 'com.sxbvpn.BACKEND_SPKI_PINS', 'android:value': '["obsolete"]' } },
@@ -61,10 +61,11 @@ test('takeover cancels starts and closes TUN and pending SSH before the main UI 
 
 test('the release still waits for compatible offline bootstrap, not a compiled certificate key', async () => {
   const compatible = { status: 'ok', service: 'sxb-vpn-backend',
-    capabilities: { mobileTunnelBootstrap: 1, mobileDirectSsh: 1 } };
-  await waitForBootstrapBackend(async () => compatible, { attempts: 1 });
+    capabilities: { mobileTunnelBootstrap: 1, mobileDirectSsh: 1, mobileRootApproval: 1,
+      mobileRootAuthority: 'a'.repeat(64) } };
+  await waitForBootstrapBackend(async () => compatible, { attempts: 1, authorityKeyId: 'a'.repeat(64) });
   await assert.rejects(waitForBootstrapBackend(async () => ({ ...compatible, capabilities: {} }),
-    { attempts: 1, report: () => {} }), /BOOTSTRAP_BACKEND_NOT_DEPLOYED/);
+    { attempts: 1, report: () => {}, authorityKeyId: 'a'.repeat(64) }), /BOOTSTRAP_BACKEND_NOT_DEPLOYED/);
   const source = read('app-mobile/scripts/verify-bootstrap-backend.cjs');
   assert.doesNotMatch(source, /readPinPolicy|verifyPublicPin|verifyServedPin/);
   assert.match(source, /fetch\(HEALTH_URL/);

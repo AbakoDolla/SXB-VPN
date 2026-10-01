@@ -2277,8 +2277,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const issue = accessIssueFromError(err);
       const code = issue?.code || (err instanceof ProvisioningError ? err.diagnostic.code
         : isAxiosError(err) ? toProvisioningError(err, 1).diagnostic.code
-        : err?.code === 'VPN_PERMISSION_REQUIRED' ? err.code : undefined);
-      const messageKey = code === 'SSH_DIRECT_SYNC_REQUIRED' ? 'ssh_direct_sync_required'
+        : ['VPN_PERMISSION_REQUIRED', 'ROOT_APPROVAL_REQUIRED', 'ROOT_CHECK_UNAVAILABLE'].includes(err?.code) ? err.code : undefined);
+      const messageKey = code === 'ROOT_APPROVAL_REQUIRED' || code === 'ROOT_CHECK_UNAVAILABLE' ? 'root_approval_required'
+        : code === 'SSH_DIRECT_SYNC_REQUIRED' ? 'ssh_direct_sync_required'
         : code === 'RELAY_CLIENT_UPDATE_REQUIRED' ? 'ssh_update_required'
         : code === 'RELAY_BOUND_SESSION_REQUIRED' ? 'ssh_activation_required'
         : code === 'RELAY_PROFILE_NOT_READY' ? 'ssh_profile_not_ready'
