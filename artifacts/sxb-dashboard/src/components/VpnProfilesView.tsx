@@ -61,6 +61,7 @@ const DEFAULT_LEGACY_FORM = {
   udpMode: 'none', udpGatewayHost: '127.0.0.1', udpGatewayPort: 7300,
   timeoutMs: 30000,
   privateKeyBase64: '', privateKeyPassphrase: '',
+  userAgent: '',
   privateKey: '', publicKey: '', address: '', presharedKey: '', persistentKeepalive: '', allowedIps: '', reserved: '', mtu: '',
   upMbps: '', downMbps: '', obfs: '', obfsPassword: '',
 };
@@ -129,6 +130,7 @@ function buildManualSshConfig(form: typeof DEFAULT_LEGACY_FORM, payload: string,
     config.insecure = form.insecure;
   }
   if (usesPayload && payload) config.payload = payload;
+  if (usesPayload && form.userAgent.trim()) config.userAgent = form.userAgent.trim();
   if (mode === 'http-connect') {
     config.proxyEnabled = true;
     if (form.proxyHost.trim()) config.proxyHost = form.proxyHost.trim();
@@ -474,6 +476,22 @@ function JsonConfigEditor({
 }
 
 /** Panneau de résultat d'un préflight /api/config-test */
+const PROBE_STEP_LABELS: Record<string, string> = {
+  DNS_RESOLVED: 'dns',
+  TCP_CONNECTED: 'tcp',
+  LATENCY_MS: 'latency',
+  TLS_HANDSHAKE_OK: 'tls',
+  TLS_FAILED: 'tls',
+  HTTP_STATUS_101: 'http',
+  HTTP_STATUS_200: 'http',
+  HTTP_STATUS_UNEXPECTED: 'http',
+  HTTP_REDIRECT_INTERMEDIATE: 'redirect',
+  HTTP_METHOD_INTERMEDIATE: 'intermediate',
+  SSH_BANNER_RECEIVED: 'ssh',
+  SSH_BANNER_MISSING: 'ssh',
+  SLOWDNS_DEVICE_REQUIRED: 'device',
+};
+
 function ProbeResultPanel({ result }: { result: ConfigTestResult }) {
   const { t } = useTranslation();
   return (
@@ -501,7 +519,8 @@ function ProbeResultPanel({ result }: { result: ConfigTestResult }) {
         <ol className="text-xs space-y-0.5">
           {result.probe.steps.map((s, i) => (
             <li key={i} className={s.ok ? 'text-emerald-400' : 'text-rose-400'}>
-              {s.ok ? '✓' : '✗'} <span className="text-gray-400">{s.step}</span> — {s.detail}
+              {s.ok ? '✓' : '✗'} <span className="text-gray-400">{PROBE_STEP_LABELS[s.event]
+                ? t(`configurations.probe.${PROBE_STEP_LABELS[s.event]}`) : s.event}</span> — {s.detail}
               {s.latencyMs != null && <span className="text-gray-600"> ({Math.round(s.latencyMs)} {t('configurations.ui.millisecondsEnd')} </span>}
             </li>
           ))}
@@ -1753,9 +1772,11 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         </div>
       )}
       <div>
-        <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.host')} {!locked && '*'}</label>
-        <input value={form.host} onChange={e => f('host', e.target.value)}
-          placeholder="141.95.112.93" className={lockedCls} disabled={locked} readOnly={locked} />
+        <label htmlFor="profile-host" className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.host')} {!locked && '*'}</label>
+        <input id="profile-host" value={form.host} onChange={e => f('host', e.target.value)}
+          placeholder={t('configurations.ssh.hostPlaceholder')} autoCapitalize="none" spellCheck={false}
+          aria-describedby="profile-host-hint" className={lockedCls} disabled={locked} readOnly={locked} />
+        <p id="profile-host-hint" className="text-[11px] text-gray-400 mt-1">{t('configurations.ssh.hostHint')}</p>
       </div>
       <div>
         <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.port')} {!locked && '*'}</label>
@@ -1820,6 +1841,11 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
               rows={6} placeholder={'CONNECT exemple.com HTTP/1.1[crlf]Host: exemple.com[crlf]User-Agent: Mozilla/5.0[crlf][crlf]'}
               className={`${inputCls} mt-2 font-mono text-xs resize-y`} disabled={locked} readOnly={locked} />
             <p className="text-[11px] text-gray-500 mt-1"> {t('configurations.ui.payloadHint')} </p>
+            <label htmlFor="ssh-user-agent" className="block text-sm text-gray-400 mt-3 mb-1.5">{t('configurations.ssh.userAgent')}</label>
+            <input id="ssh-user-agent" value={form.userAgent || ''} onChange={e => f('userAgent', e.target.value)}
+              placeholder={t('configurations.ssh.userAgentAuto')} maxLength={1024} autoComplete="off"
+              spellCheck={false} aria-describedby="ssh-user-agent-hint" className={lockedCls} disabled={locked} readOnly={locked} />
+            <p id="ssh-user-agent-hint" className="text-[11px] text-gray-400 mt-1">{t('configurations.ssh.userAgentHint')}</p>
           </div>
         )}
         {form.proxyEnabled && (

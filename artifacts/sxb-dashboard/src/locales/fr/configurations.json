@@ -94,7 +94,7 @@
     "sshSlowDns": "SSH + SlowDNS",
     "sshUdp": "SSH + UDPGW",
     "transportOk": "Transport OK",
-    "probeUnreachable": "Injoignable depuis le sondeur",
+    "probeUnreachable": "Connexion non confirmée depuis le serveur",
     "invalidConfig": "Configuration invalide",
     "syntaxOnly": "Validation syntaxique seulement",
     "neverTested": "Jamais testé",
@@ -130,7 +130,7 @@
     "duration": "durée",
     "milliseconds": "ms",
     "millisecondsEnd": "ms)",
-    "probeHint": "⚠ Injoignable depuis ce serveur ≠ forcément invalide : la cible peut être géo-restreinte ou réservée à certains opérateurs. La config est conservée telle quelle.",
+    "probeHint": "Un résultat non confirmé depuis le serveur n’invalide pas le domaine et n’empêche pas l’import. Le réseau du téléphone peut être requis. Le test ne modifie ni l’hôte ni le payload et ne vérifie pas les identifiants SSH.",
     "assignmentFailed": "Échec de l’attribution",
     "importInvalid": "Configuration importée invalide",
     "immutable": "Champs techniques immuables",
@@ -281,7 +281,23 @@
     "sshFamily": "SSH (tous les modes)",
     "test": "Valider le transport SSH",
     "incomplete": "Renseignez l’hôte, le port, l’utilisateur et un mot de passe ou une clé privée SSH.",
-    "sniHint": "Nom présenté pendant TLS ; vide = nom du serveur."
+    "sniHint": "Nom présenté pendant TLS ; vide = nom du serveur.",
+    "hostHint": "Nom de domaine, IPv4 ou IPv6. Le domaine reste conservé ; inutile de le remplacer par une IP.",
+    "hostPlaceholder": "ssh.exemple.com",
+    "userAgent": "User-Agent du payload (optionnel)",
+    "userAgentAuto": "Automatique : navigateur Android",
+    "userAgentHint": "Remplace [ua] sans toucher aux autres en-têtes. Laissez vide pour le défaut commun au test et à l’app ; copiez celui du fournisseur si nécessaire."
+  },
+  "probe": {
+    "dns": "Résolution du domaine",
+    "tcp": "Connexion TCP",
+    "latency": "Latence",
+    "tls": "TLS déclaré",
+    "http": "Réponse HTTP",
+    "redirect": "Redirection intermédiaire",
+    "intermediate": "Réponse de méthode intermédiaire",
+    "ssh": "Bannière SSH",
+    "device": "Test sur l’appareil requis"
   },
   "validity": {
     "label": "Durée du compte fournisseur (jours)",

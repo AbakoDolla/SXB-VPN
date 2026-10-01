@@ -94,7 +94,7 @@
     "sshSlowDns": "SSH + SlowDNS",
     "sshUdp": "SSH + UDPGW",
     "transportOk": "Transport OK",
-    "probeUnreachable": "Unreachable from probe",
+    "probeUnreachable": "Connection not confirmed from the server",
     "invalidConfig": "Invalid configuration",
     "syntaxOnly": "Syntax validation only",
     "neverTested": "Never tested",
@@ -130,7 +130,7 @@
     "duration": "duration",
     "milliseconds": "ms",
     "millisecondsEnd": "ms)",
-    "probeHint": "⚠ Unreachable from this server does not necessarily mean invalid: the target may be geo-restricted or limited to certain carriers. The configuration is kept unchanged.",
+    "probeHint": "An unconfirmed server-side result does not invalidate the domain or block import. The phone’s network may be required. This test changes neither the host nor the payload and does not verify SSH credentials.",
     "assignmentFailed": "Assignment failed",
     "importInvalid": "Invalid imported configuration",
     "immutable": "Technical fields are immutable",
@@ -281,7 +281,23 @@
     "sshFamily": "SSH (all modes)",
     "test": "Validate SSH transport",
     "incomplete": "Fill in the SSH host, port, user and a password or private key.",
-    "sniHint": "Name presented during TLS; empty = server name."
+    "sniHint": "Name presented during TLS; empty = server name.",
+    "hostHint": "Domain name, IPv4 or IPv6. The domain is preserved; there is no need to replace it with an IP.",
+    "hostPlaceholder": "ssh.example.com",
+    "userAgent": "Payload User-Agent (optional)",
+    "userAgentAuto": "Automatic: Android browser",
+    "userAgentHint": "Replaces [ua] without changing other headers. Leave blank for the shared probe/app default, or copy the provider’s value when required."
+  },
+  "probe": {
+    "dns": "Domain resolution",
+    "tcp": "TCP connection",
+    "latency": "Latency",
+    "tls": "Declared TLS",
+    "http": "HTTP response",
+    "redirect": "Intermediate redirect",
+    "intermediate": "Intermediate method response",
+    "ssh": "SSH identification",
+    "device": "On-device test required"
   },
   "validity": {
     "label": "Provider account duration (days)",

@@ -100,7 +100,7 @@ const payload = net.createServer(socket => {
 });
 
 // Mobile networks can separate cosmetic HTTP replies by much more than 250 ms.
-function delayedPayloadServer(refuseIntermediateMethod = false) {
+function delayedPayloadServer(refuseIntermediateMethod = false, preamble = false) {
   return net.createServer(socket => {
     socket.on('error', () => socket.destroy());
     let received = Buffer.alloc(0);
@@ -114,6 +114,10 @@ function delayedPayloadServer(refuseIntermediateMethod = false) {
       socket.pause();
       const httpBytes = Buffer.byteLength(parts.slice(0, 3).join('\r\n\r\n') + '\r\n\r\n', 'latin1');
       const pending = received.subarray(httpBytes);
+      if (preamble) {
+        assert.equal(text.slice(0, httpBytes), reportedRequest.replace('fixture-agent', browserAgent),
+          'domain payload or automatic browser User-Agent changed');
+      }
       const body = '<html>Method not allowed</html>';
       const intermediate = refuseIntermediateMethod
         ? `HTTP/1.1 403 Forbidden\r\nContent-Length: ${body.length}\r\n\r\n${body}`
@@ -123,7 +127,7 @@ function delayedPayloadServer(refuseIntermediateMethod = false) {
         if (socket.destroyed) return;
         const target = net.connect(ssh.address().port, '127.0.0.1', () => {
           socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\r\n' +
-            'HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody');
+            (preamble ? 'Content-Length: 104857600000\r\n\r\n\r\n' : 'HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody'));
           if (pending.length) target.write(pending);
           socket.pipe(target); target.pipe(socket); socket.resume();
         });
@@ -137,8 +141,10 @@ function delayedPayloadServer(refuseIntermediateMethod = false) {
 }
 const delayedPayload = delayedPayloadServer();
 const methodRefusalPayload = delayedPayloadServer(true);
+const preamblePayload = delayedPayloadServer(true, true);
 
 const websocketReports = {};
+const browserAgent = 'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36';
 const reportedRequest = 'GET / HTTP/1.1\r\nHost: batch.example.test\r\n\r\n' +
   'X / HTTP/1.1\r\nHost: ssh.example.test\r\n\r\n' +
   'GET / HTTP/1.1\r\nHost: game.example.test\r\nBackend: reports.example.test\r\n' +
@@ -298,6 +304,7 @@ function tls13Blackhole(target) {
 (async () => {
   await listen(download); await listen(greeting); await listen(upload); await listen(uploadReport);
   await listen(ssh); await listen(payload); await listen(delayedPayload); await listen(methodRefusalPayload);
+  await listen(preamblePayload);
   await listen(legacyWebsocketPayload); await listen(clientFirstWebsocketPayload);
   await listen(pingWebsocketPayload); await listen(websocketReport);
   const parsedKey = utils.parseKey(key);
@@ -347,6 +354,7 @@ function tls13Blackhole(target) {
   writeFileSync(process.argv[2], JSON.stringify({
     sshPort: ssh.address().port, payloadPort: payload.address().port, delayedPayloadPort: delayedPayload.address().port,
     methodRefusalPayloadPort: methodRefusalPayload.address().port,
+    preamblePayloadPort: preamblePayload.address().port,
     legacyWebsocketPayloadPort: legacyWebsocketPayload.address().port,
     clientFirstWebsocketPayloadPort: clientFirstWebsocketPayload.address().port,
     pingWebsocketPayloadPort: pingWebsocketPayload.address().port,
