@@ -48,6 +48,7 @@ import FreeTrialCard from "@/components/FreeTrialCard";
 import { blocksDevice } from "@/services/accessPolicy";
 import { connexionsNouvelles, memoriser, oublier } from "@/services/newConnectionWatch";
 import { avecDelai, estLenteur } from "@/services/attenteBornee";
+import { choisirConfigDeSecours, suiteApresBascule, suivreEchecs } from "@/services/configDeSecours";
 
 /**
  * Cadence de relecture des connexions pendant que l'écran est ouvert.
@@ -74,16 +75,6 @@ const LOGO = require("../../assets/images/icon.png");
  * mot « Bonjour » n'ajoute rien.
  */
 const GREETING_EMOJI = "👋";
-
-/**
- * États qui rendent une configuration inutilisable.
- *
- * Servent à ne proposer un changement que s'il MÈNE quelque part : suggérer
- * une configuration elle aussi retirée ferait recommencer l'utilisateur pour
- * rien. `deleted` est le cas le plus courant — le forfait a disparu de
- * l'inventaire du serveur alors que l'appareil en garde la trace.
- */
-const ETATS_BLOQUANTS = new Set(['deleted', 'revoked', 'suspended', 'expired', 'exhausted']);
 
 /**
  * Au-delà, le rafraîchissement cesse d'être ANNONCÉ — jamais interrompu.
@@ -132,7 +123,7 @@ export default function HomeScreen() {
   const responsive = useResponsive();
   const { user, accountState, refreshAccountState, deviceId, isAuthenticated, deviceAccess } = useAuthContext();
   const {
-    isConnected, isConnecting, selectedProtocol, connectedProtocol,
+    isConnected, isConnecting, vpnState, selectedProtocol, connectedProtocol,
     hasValidConfig, activeConnection,
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
@@ -369,18 +360,87 @@ export default function HomeScreen() {
   }, [nouvellesConnexions, chargerNouvellesConnexions]);
 
   /**
+   * Configurations qui viennent d'échouer, le temps d'un épisode.
+   *
+   * L'état précédent part de `disconnected`, l'état initial du contexte : un
+   * accueil monté alors que la connexion est DÉJÀ en échec compte cet échec,
+   * au lieu d'attendre le suivant pour proposer une issue.
+   */
+  const vpnStatePrecedentRef = useRef<string>('disconnected');
+  const [configsEnEchec, setConfigsEnEchec] = useState<ReadonlyArray<string>>([]);
+  useEffect(() => {
+    const avant = vpnStatePrecedentRef.current;
+    vpnStatePrecedentRef.current = vpnState;
+    setConfigsEnEchec((echouees) => suivreEchecs(echouees, {
+      avant, apres: vpnState, configId: activeConfigId, connecte: isConnected,
+    }));
+  }, [vpnState, activeConfigId, isConnected]);
+
+  /**
    * Une autre configuration, réellement utilisable, vers laquelle basculer.
    *
    * Ne proposer un changement que s'il MÈNE quelque part : suggérer une
-   * configuration elle aussi retirée ou suspendue ferait recommencer
-   * l'utilisateur pour rien, et lui donnerait le sentiment que l'application
-   * le promène. `undefined` quand aucune ne convient — le bandeau disparaît
-   * alors, plutôt que de mentir.
+   * configuration elle aussi retirée, expirée, ou qui vient d'échouer ferait
+   * recommencer l'utilisateur pour rien, et lui donnerait le sentiment que
+   * l'application le promène. `undefined` quand aucune ne convient — le
+   * bandeau disparaît alors, plutôt que de mentir. Les règles sont dans
+   * `services/configDeSecours.ts`.
    */
   const configDeSecours = useMemo(
-    () => savedConfigs.find((c) => !c.isActive && !ETATS_BLOQUANTS.has(String(c.status ?? 'active'))),
-    [savedConfigs],
+    () => choisirConfigDeSecours(savedConfigs, { connexions: connections, dejaEssayees: configsEnEchec }),
+    [savedConfigs, connections, configsEnEchec],
   );
+
+  /**
+   * La connexion vient d'échouer sur la configuration active.
+   *
+   * Un appareil bloqué n'est pas concerné : aucune configuration ne le
+   * débloquerait, le bouton renvoie déjà vers l'écran qui l'explique.
+   */
+  const echecActif = vpnState === 'error' && !isConnected && !isConnecting
+    && !blocksDevice(deviceAccess)
+    && !!activeConfigId && configsEnEchec.includes(activeConfigId);
+  // L'accès retiré garde la priorité et son geste d'origine — basculer sans
+  // connecter. Après un simple échec, l'utilisateur voulait se connecter :
+  // le même appui bascule PUIS connecte.
+  const basculeApresEchec = revokedStatus === 'none' && echecActif;
+
+  /**
+   * Bascule sur la configuration de secours, puis demande la connexion.
+   *
+   * La demande n'est posée qu'APRÈS la bascule : posée avant, elle serait
+   * lue par un rendu où la bascule n'a pas encore commencé, et abandonnée.
+   * La référence écarte un second appui pendant que le premier travaille —
+   * deux bascules croisées se disputeraient la configuration active.
+   */
+  const [connexionApresBascule, setConnexionApresBascule] = useState<string | null>(null);
+  const essaiSecoursRef = useRef(false);
+  const essayerConfigDeSecours = useCallback(async (id: string) => {
+    if (essaiSecoursRef.current) return;
+    essaiSecoursRef.current = true;
+    try {
+      await switchConfig(id);
+      setConnexionApresBascule(id);
+    } catch {
+      // `switchConfig` signale lui-même ses échecs (`switchError`, affiché
+      // plus bas) ; il n'y a rien à connecter.
+    } finally {
+      essaiSecoursRef.current = false;
+    }
+  }, [switchConfig]);
+
+  useEffect(() => {
+    const suite = suiteApresBascule({
+      cible: connexionApresBascule,
+      basculeEnCours: isSwitchingConfig,
+      activeConfigId,
+      connecte: isConnected,
+      enConnexion: isConnecting,
+    });
+    if (suite === 'rien' || suite === 'attendre') return;
+    setConnexionApresBascule(null);
+    if (suite === 'connecter') void connect();
+  }, [connexionApresBascule, isSwitchingConfig, activeConfigId, isConnected, isConnecting, connect]);
 
   /**
    * Accès proposés au sélecteur : ceux du serveur, MOINS ceux que
@@ -695,13 +755,19 @@ export default function HomeScreen() {
                 indication de celui qui marche.
 
                 Ce bandeau ne s'affiche que s'il existe VRAIMENT une autre
-                configuration utilisable, et bascule dessus en un geste. */}
-            {revokedStatus !== 'none' && configDeSecours && (
+                configuration utilisable, et bascule dessus en un geste. Il
+                paraît aussi quand la connexion vient d'ÉCHOUER : le même geste
+                bascule alors puis connecte, une configuration à la fois. */}
+            {(revokedStatus !== 'none' || echecActif) && configDeSecours && (
               <Pressable
-                onPress={() => void switchConfig(configDeSecours.id)}
+                onPress={() => void (basculeApresEchec
+                  ? essayerConfigDeSecours(configDeSecours.id)
+                  : switchConfig(configDeSecours.id))}
                 disabled={isSwitchingConfig}
                 accessibilityRole="button"
-                accessibilityLabel={t('switch_action')}
+                accessibilityLabel={basculeApresEchec
+                  ? `${t('switch_try_action')}, ${configDeSecours.name}`
+                  : t('switch_action')}
                 style={({ pressed }) => [
                   styles.configCurrent,
                   {
@@ -716,7 +782,9 @@ export default function HomeScreen() {
                   <Ionicons name="swap-horizontal" size={19} color={colors.primary} />
                 </View>
                 <View style={{ flex: 1, gap: spacing.xs }}>
-                  <Text style={[type.captionMedium, { color: colors.primary }]}>{t('switch_suggestion')}</Text>
+                  <Text style={[type.captionMedium, { color: colors.primary }]}>
+                    {basculeApresEchec ? t('switch_after_failure') : t('switch_suggestion')}
+                  </Text>
                   <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>
                     {configDeSecours.name}
                   </Text>

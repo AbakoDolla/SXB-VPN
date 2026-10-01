@@ -9,6 +9,7 @@ import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import type { AccessAuthority, AccessSnapshot, DeviceStatus, ProfileStatus, ProfileIdentity } from '../services/accessPolicy';
 import type { NativeAccessRuntime } from '../services/nativeAccess';
 import type { IdentitySession } from '../services/identitySession';
+import { choisirConfigDeSecours, ETATS_BLOQUANTS, suivreEchecs, type ConnexionServeur } from '../services/configDeSecours';
 
 const mobile = path.resolve(__dirname, '..');
 const requireMobile = createRequire(path.join(mobile, 'package.json'));
@@ -1994,5 +1995,130 @@ describe('livre de comptes de la consommation', () => {
     assert.equal(h.ledger.pendingBytes(relu), 15);
     // Une entrée relue est gelée d'office : elle a pu atteindre le serveur.
     assert.equal(relu.entries[0].frozen, true);
+  });
+});
+
+/**
+ * Plusieurs configurations sur un même téléphone : l'import MIXTE — forfaits
+ * attribués depuis le tableau de bord ET configuration manuelle — alimente la
+ * sortie de secours de l'accueil.
+ *
+ * Mêmes pièces que sur l'appareil : le magasin chiffré réel, l'état d'accès
+ * réel, et des résumés qui prennent l'état, l'échéance et l'identité
+ * d'abonnement comme `reloadLocalConfigs`. Le choix est
+ * `choisirConfigDeSecours`, celui de l'accueil ; `setActive` est l'écriture
+ * qu'opère `switchConfig`.
+ */
+describe('secours parmi plusieurs configurations, sur le vrai magasin', () => {
+  const echec = { avant: 'connecting', apres: 'error', connecte: false };
+
+  async function resumes(h: Harness) {
+    const authority = h.access.getAccessState().authority;
+    return (h.sync.storeValue(await h.store.list()) ?? []).map(entry => ({
+      id: entry.configId, isActive: entry.isActive === true,
+      status: h.policy.profileRestriction(authority, entry)?.status ?? entry.accessStatus,
+      expiryDate: entry.expiryDate ?? null,
+      subscriptionId: entry.subscriptionId, source: entry.source,
+    }));
+  }
+  async function activer(h: Harness, id: string) {
+    assert.equal((await h.store.setActive(id)).status, 'ok');
+    equal((await resumes(h)).filter(c => c.isActive).map(c => c.id), [id]);
+    return (await h.store.getActive()).value!.meta;
+  }
+
+  it('forfaits et configuration manuelle : une à la fois, jusqu’à épuisement, sans proposer d’impasse', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    assert.equal((await h.store.save('c', { ...config, configId: 'c' }, {
+      name: 'Profile c', source: 'backend', subscriptionId: 'c', configHash: 'hash-c', configVersion: 1, isActive: false,
+    })).status, 'ok');
+    const s = snapshot('mixte');
+    s.subscriptions.push({ ...s.subscriptions[1], id: 'c', name: 'Profile C', configHash: 'hash-c' });
+    await apply(h, s);
+    cleanup();
+    // Le forfait c reste « actif », mais le compte acheté chez le fournisseur
+    // a expiré : le serveur ne le dit que par ce booléen.
+    const connexions = remoteConnections(s).connections.map(c => ({ ...c, providerExpired: c.id === 'c' }));
+    const maintenant = new Date('2026-09-10T00:00:00.000Z');
+    const choix = async (essayees: ReadonlyArray<string>) =>
+      choisirConfigDeSecours(await resumes(h), { connexions, dejaEssayees: essayees, maintenant })?.id;
+
+    equal((await resumes(h)).map(c => c.id), ['a', 'b', 'manual', 'c']);
+    let essayees = suivreEchecs([], { ...echec, configId: 'a' });
+    assert.equal(await choix(essayees), 'b');
+    assert.equal((await activer(h, 'b')).subscriptionId, 'b');
+
+    essayees = suivreEchecs(essayees, { ...echec, configId: 'b' });
+    assert.equal(await choix(essayees), 'manual');
+    // Ce que lit ensuite le compteur de consommation : une configuration
+    // manuelle, sans forfait — elle n'emprunte celui d'aucune autre.
+    const manuelle = await activer(h, 'manual');
+    assert.equal(manuelle.source, 'manual');
+    assert.equal(manuelle.subscriptionId, undefined);
+    for (const id of ['a', 'b', 'c']) {
+      const meta = (await h.store.get(id)).value?.meta;
+      assert.equal(meta?.source, 'backend', id);
+      assert.equal(meta?.subscriptionId, id, id);
+    }
+
+    essayees = suivreEchecs(essayees, { ...echec, configId: 'manual' });
+    assert.equal(await choix(essayees), undefined, 'c mènerait à un échec certain : le bandeau se tait');
+
+    // Une connexion réussie clôt l'épisode : a redevient une issue.
+    essayees = suivreEchecs(essayees, { avant: 'connecting', apres: 'connected', configId: 'manual', connecte: true });
+    assert.equal(await choix(essayees), 'a');
+  });
+
+  it('hors ligne, l’échéance du registre écarte un forfait que l’état dit encore actif', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    const s = snapshot('echeance');
+    s.subscriptions[1].expireAt = '2026-09-10T00:00:00.000Z';
+    await apply(h, s);
+    cleanup();
+    const b = (await resumes(h)).find(c => c.id === 'b');
+    // L'état seul ne suffit pas : b n'a aucun état bloquant sur l'appareil.
+    assert.equal(ETATS_BLOQUANTS.has(String(b?.status ?? 'active')), false);
+    assert.equal(b?.expiryDate, '2026-09-10T00:00:00.000Z');
+    const choix = async (maintenant: Date) =>
+      choisirConfigDeSecours(await resumes(h), { dejaEssayees: ['a'], maintenant })?.id;
+    assert.equal(await choix(new Date('2026-09-09T12:00:00.000Z')), 'b');
+    assert.equal(await choix(new Date('2026-09-11T00:00:00.000Z')), 'manual');
+  });
+
+  it('un alias local lit l’état serveur de SON forfait, et le garde une fois choisi', async () => {
+    // Défaut relevé en revue : la configuration `local-alias`, liée au forfait
+    // `owned-plan`, était comparée au serveur par son propre identifiant — donc
+    // jamais — et restait proposée quand son forfait ne menait plus nulle part.
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    assert.equal((await h.store.save('local-alias', { ...config, configId: 'local-alias' }, {
+      name: 'Alias local', source: 'backend', subscriptionId: 'owned-plan',
+      configHash: 'hash-owned', configVersion: 1, isActive: false,
+    })).status, 'ok');
+    const s = snapshot('alias');
+    s.subscriptions.push({ ...s.subscriptions[1], id: 'owned-plan', name: 'Owned plan', configHash: 'hash-owned' });
+    await apply(h, s);
+    cleanup();
+    const maintenant = new Date('2026-09-10T00:00:00.000Z');
+    const choix = async (connexions: ConnexionServeur[]) =>
+      choisirConfigDeSecours(await resumes(h), { connexions, dejaEssayees: ['a', 'b', 'manual'], maintenant })?.id;
+
+    const alias = (await resumes(h)).find(c => c.id === 'local-alias');
+    equal({ subscriptionId: alias?.subscriptionId, source: alias?.source }, { subscriptionId: 'owned-plan', source: 'backend' });
+    // Sur l'appareil, rien ne trahit le compte fournisseur expiré : seul le
+    // serveur le dit, sur l'entrée de `owned-plan`.
+    assert.equal(ETATS_BLOQUANTS.has(String(alias?.status ?? 'active')), false);
+    const fraiches: ConnexionServeur[] = remoteConnections(s).connections;
+    assert.equal(fraiches.some(c => c.id === 'local-alias'), false, 'le serveur ne connaît que le forfait');
+    assert.equal(await choix(fraiches.map(c => ({ ...c, providerExpired: c.id === 'owned-plan' }))), undefined,
+      'compte fournisseur expiré : le bandeau se tait');
+    assert.equal(await choix(fraiches.map(c => (c.id === 'owned-plan' ? { ...c, status: 'suspended' } : c))), undefined,
+      'forfait suspendu côté serveur');
+    assert.equal(await choix(fraiches), 'local-alias', 'forfait sain : l’alias est proposé, par son id');
+    // Choisi, l'alias se connecte avec SON forfait : rien n'a été réécrit.
+    const meta = await activer(h, 'local-alias');
+    equal({ source: meta.source, subscriptionId: meta.subscriptionId }, { source: 'backend', subscriptionId: 'owned-plan' });
   });
 });

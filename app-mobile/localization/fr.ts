@@ -549,6 +549,8 @@ export const fr = {
   stop_quota_epuise: "Données épuisées sur cette configuration",
   switch_suggestion: "Une autre configuration est disponible",
   switch_action: "Changer maintenant",
+  switch_after_failure: "La connexion a échoué — essayez une autre configuration",
+  switch_try_action: "Essayer maintenant",
   journal_share: "Partager ce journal",
   journal_open: "Journal d'activité",
   journal_open_hint: "Suivre les étapes de connexion",

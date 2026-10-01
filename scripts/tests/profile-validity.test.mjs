@@ -4,11 +4,13 @@
  * DEMANDE : afficher le temps restant d'une configuration VPN ajoutée depuis le
  * tableau de bord, et la prolonger SANS saisir le mot de passe de la
  * configuration. Ces tests font tourner les vraies routes sur le magasin isolé
- * de `reseller-http.test.mjs` et vérifient les trois garanties :
+ * de `reseller-http.test.mjs` et vérifient quatre garanties :
  *   1. l'échéance est lisible verrou fermé, sans aucun champ technique ;
  *   2. la prolongation ne demande ni mot de passe ni preuve de déverrouillage,
  *      et ne touche à rien d'autre (verrou, technique, `updatedAt`) ;
- *   3. le contrôle de propriété reste celui de toutes les routes `/:id`.
+ *   3. le contrôle de propriété reste celui de toutes les routes `/:id` ;
+ *   4. l'application apprend l'expiration du compte fournisseur par un
+ *      booléen seul, sans date ni champ technique.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -116,4 +118,42 @@ test("la prolongation garde le contrôle de propriété des routes /:id", async 
   assert.equal(+row("VpnProfile", foreign.id).expiresAt, expiresAt);
   ok(await api(null, "POST", `/vpn-profiles/${foreign.id}/extend`, { days: 30 }), 401);
   ok(await api("u1", "POST", `/vpn-profiles/${foreign.id}/extend`, { days: 30 }), 403);
+});
+
+// L'application choisit une configuration de secours après un échec : elle ne
+// doit pas proposer celle dont le compte fournisseur a expiré. Elle reçoit un
+// booléen, jamais la date ni un champ technique, et le forfait reste « actif ».
+test("/mobile/connections signale le compte fournisseur expiré par un simple booléen", async () => {
+  const souscrit = await api("r1", "POST", "/subscriptions", { clientId: "c1", profileId: "p1", quotaGB: 5, durationDays: 30 });
+  ok(souscrit, 201);
+  const id = souscrit.body.subscription.id;
+  const deviceId = "PROVIDER-EXPIRY-DEVICE";
+  const activation = await api(null, "POST", "/mobile/auth/activate", { token: row("VpnClient", "c1").token, deviceId });
+  ok(activation);
+  const appareil = { Authorization: "Bearer " + activation.body.accessToken, "X-SXB-Device-ID": deviceId };
+  const entree = async () => {
+    const liste = await api(null, "GET", "/mobile/connections", undefined, appareil);
+    ok(liste);
+    const trouvee = liste.body.connections.find(c => c.id === id);
+    assert.ok(trouvee, "le forfait est listé");
+    return trouvee;
+  };
+
+  row("VpnProfile", "p1").expiresAt = null;
+  assert.equal((await entree()).providerExpired, false, "sans échéance fournisseur, rien n'est inventé");
+
+  row("VpnProfile", "p1").expiresAt = new Date(Date.now() + 3 * DAY);
+  assert.equal((await entree()).providerExpired, false);
+
+  const echue = new Date(Date.now() - DAY);
+  row("VpnProfile", "p1").expiresAt = echue;
+  const expiree = await entree();
+  assert.equal(expiree.providerExpired, true);
+  assert.equal(expiree.status, "active", "information d'exploitation : le forfait reste accessible");
+  assert.equal(expiree.expiresAt, souscrit.body.subscription.expireAt
+    ? new Date(souscrit.body.subscription.expireAt).toISOString() : null, "l'échéance listée reste celle du forfait");
+  assert.ok(!JSON.stringify(expiree).includes(echue.toISOString()), "la date du fournisseur ne sort jamais");
+  for (const field of ["host", "port", "username", "password", "lockPasswordHash", "profile"]) {
+    assert.equal(expiree[field], undefined, `fuite : ${field}`);
+  }
 });

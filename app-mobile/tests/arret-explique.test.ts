@@ -31,6 +31,9 @@ import { describe, it } from 'node:test';
 const RACINE = path.resolve(__dirname, '..');
 const CONTEXTE = readFileSync(path.join(RACINE, 'contexts/VpnContext.tsx'), 'utf8');
 const ACCUEIL = readFileSync(path.join(RACINE, 'app/(tabs)/index.tsx'), 'utf8');
+// Les règles du secours vivent désormais dans un module pur, testé à part
+// (`config-secours.test.ts`) ; l'accueil ne fait que les appliquer.
+const SECOURS = readFileSync(path.join(RACINE, 'services/configDeSecours.ts'), 'utf8');
 
 describe('l’arrêt d’accès nomme toujours sa cause', () => {
   it('chaque motif a une phrase, dans les deux langues', () => {
@@ -87,21 +90,24 @@ describe('l’arrêt d’accès nomme toujours sa cause', () => {
 describe('changer de configuration doit mener quelque part', () => {
   it('une configuration de secours est cherchée parmi les valables', () => {
     assert.match(ACCUEIL, /const configDeSecours = useMemo\(/);
-    assert.match(ACCUEIL, /!ETATS_BLOQUANTS\.has\(String\(c\.status \?\? 'active'\)\)/);
+    assert.match(ACCUEIL, /choisirConfigDeSecours\(savedConfigs,/);
+    assert.match(SECOURS, /ETATS_BLOQUANTS\.has\(String\(config\.status \?\? 'active'\)\)/);
     // Jamais celle déjà active : basculer sur soi-même n'apprendrait rien.
-    assert.match(ACCUEIL, /!c\.isActive/);
+    assert.match(SECOURS, /if \(config\.isActive \|\| essayees\.has\(config\.id\)\) return false;/);
   });
 
   it('les états qui rendent une configuration inutile sont nommés', () => {
     for (const etat of ['deleted', 'revoked', 'suspended', 'expired', 'exhausted']) {
-      assert.match(ACCUEIL, new RegExp(`'${etat}'`), `${etat} absent des états bloquants`);
+      assert.match(SECOURS, new RegExp(`'${etat}'`), `${etat} absent des états bloquants`);
     }
   });
 
   it('le bandeau ne paraît que s’il y a vraiment où aller', () => {
     // Deux conditions : un problème ET une issue. Sans l'une, rien ne s'affiche.
-    assert.match(ACCUEIL, /revokedStatus !== 'none' && configDeSecours &&/);
-    assert.match(ACCUEIL, /onPress=\{\(\) => void switchConfig\(configDeSecours\.id\)\}/);
+    // Le problème est un accès retiré, ou un échec de connexion.
+    assert.match(ACCUEIL, /\(revokedStatus !== 'none' \|\| echecActif\) && configDeSecours &&/);
+    // Accès retiré : le geste d'origine, basculer sans connecter.
+    assert.match(ACCUEIL, /:\s*switchConfig\(configDeSecours\.id\)\)\}/);
   });
 
   it('le bandeau se nomme dans les deux langues', () => {
