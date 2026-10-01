@@ -6,8 +6,8 @@ package com.sxbvpn.usagefixture
 abstract class BroadcastReceiver {
     abstract fun onReceive(c: Context?, i: Intent?)
 }
-class Intent(val action: String) {
-    fun getStringExtra(key: String): String? = null
+class Intent(val action: String, private val state: String? = null) {
+    fun getStringExtra(key: String): String? = if (key == "state") state else null
     fun getLongExtra(key: String, fallback: Long): Long = fallback
 }
 class IntentFilter(val action: String)
@@ -28,8 +28,8 @@ class Context {
         check(receivers.remove(receiver) != null) { "Receiver was not registered" }
         unregistered++
     }
-    fun broadcast(action: String) {
-        receivers.toMap().filterValues { it == action }.keys.forEach { it.onReceive(this, Intent(action)) }
+    fun broadcast(action: String, state: String? = null) {
+        receivers.toMap().filterValues { it == action }.keys.forEach { it.onReceive(this, Intent(action, state)) }
     }
 }
 object Build {
@@ -51,6 +51,7 @@ object SxbVpnService {
     const val BROADCAST_LOG = "log"
 }
 object SxbAccessControl { const val BROADCAST = "access" }
+object SxbRootAccess { const val BROADCAST = "root-access" }
 object SxbPrivacyPolicy { fun vpnAllowed(context: Context) = context.allowed }
 class HeadlessJsTaskConfig(val name: String, val data: WritableMap, val timeout: Long, val foreground: Boolean)
 class HeadlessJsTaskContext {
@@ -79,7 +80,7 @@ fun main() {
         val bridge = UsageReceiverHarness(ctx)
         bridge.initialize()
         check(ctx.nullRegistrations == 0) { "A null receiver only queries sticky broadcasts" }
-        check(ctx.receivers.size == 4)
+        check(ctx.receivers.size == 5)
         check(ctx.flags.all { it == if (api >= 33) Context.RECEIVER_NOT_EXPORTED else 0 })
         val registered = ctx.receivers.keys.toList()
         ctx.broadcast("com.sxbvpn.USAGE_TICK")
@@ -98,6 +99,11 @@ fun main() {
         ctx.broadcast(SxbAccessControl.BROADCAST)
         check(bridge.events == listOf("onAccessStateChange", "onAccessStateChange"))
         check(ctx.receivers.keys.toList() == registered)
+        ctx.broadcast(SxbRootAccess.BROADCAST)
+        check(bridge.events.size == 2) { "An empty root broadcast cannot change startup authority" }
+        ctx.broadcast(SxbRootAccess.BROADCAST, """{"allowed":false,"rooted":true}""")
+        check(bridge.events.last() == "onRootAppAccessChange")
+        check(ctx.receivers.keys.toList() == registered)
         ctx.tasks.running.clear()
         ctx.allowed = false
         ctx.broadcast("com.sxbvpn.USAGE_TICK")
@@ -112,7 +118,7 @@ fun main() {
         println("PASS native usage reporting: API $api stable receiver and consent")
 
         bridge.invalidate()
-        check(ctx.unregistered == 4 && ctx.receivers.isEmpty())
+        check(ctx.unregistered == 5 && ctx.receivers.isEmpty())
         check(bridge.accessExecutor.stopped)
         ctx.broadcast("com.sxbvpn.USAGE_TICK")
         check(ctx.tasks.started.size == 2)

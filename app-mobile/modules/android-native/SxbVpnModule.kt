@@ -705,11 +705,11 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                     "SxbUsageReport", Arguments.createMap(), 180_000L, true,
                 ))
             }
-            rootReceiver = object : BroadcastReceiver() {
-                override fun onReceive(c: Context?, i: Intent?) {
-                    val state = i?.getStringExtra("state") ?: return
-                    sendEvent("onRootAppAccessChange", Arguments.createMap().apply { putString("state", state) })
-                }
+        }
+        rootReceiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, i: Intent?) {
+                val state = i?.getStringExtra("state") ?: return
+                sendEvent("onRootAppAccessChange", Arguments.createMap().apply { putString("state", state) })
             }
         }
 
