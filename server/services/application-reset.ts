@@ -34,7 +34,7 @@ export const RESET_TABLE_LOCK_SQL = `LOCK TABLE
   "activation_sessions", "admin_tokens", "app_registrations", "audit_logs", "data_additions",
   "free_trial_requests", "free_trial_tokens",
   "mobile_connections", "mobile_health_devices", "mobile_health_reports", "mobile_proof_nonces",
-  "permissions", "push_tokens",
+  "permissions", "push_tokens", "root_device_approvals",
   "reseller_quota_movements", "resellers", "role_permissions", "roles",
   "security_events", "security_passkeys", "servers",
   "settings", "singbox_accounts", "ssh_accounts", "ssh_payloads", "subscription_devices",

@@ -14,6 +14,7 @@ const { withAndroidManifest, withDangerousMod, withAppBuildGradle, withGradlePro
 const path = require('path');
 const fs   = require('fs');
 const { execFileSync } = require('child_process');
+const { rootAuthorityForOrigin } = require('../scripts/root-authority-policy.cjs');
 
 // ── 1. Permissions + déclaration service dans AndroidManifest.xml ─────────────
 //
@@ -91,6 +92,17 @@ function withVpnManifest(config) {
 
     const app = manifest.application?.[0];
     if (!app) return mod;
+    manifest.queries = manifest.queries || [];
+    const rootPackages = ['com.noshufou.android.su', 'com.noshufou.android.su.elite', 'eu.chainfire.supersu',
+      'com.koushikdutta.superuser', 'com.thirdparty.superuser', 'com.yellowes.su',
+      'com.topjohnwu.magisk', 'com.kingroot.kinguser', 'com.kingo.root'];
+    const queries = manifest.queries[0] || (manifest.queries[0] = {});
+    queries.package = queries.package || [];
+    for (const name of rootPackages) {
+      if (!queries.package.some(entry => entry.$?.['android:name'] === name)) {
+        queries.package.push({ $: { 'android:name': name } });
+      }
+    }
     app['meta-data'] = app['meta-data'] || [];
     const setMetadata = (name, value) => {
       app['meta-data'] = app['meta-data'].filter(entry => entry.$?.['android:name'] !== name);
@@ -105,6 +117,7 @@ function withVpnManifest(config) {
       throw new Error('SXB access control requires a fixed HTTPS API origin');
     }
     setMetadata('com.sxbvpn.api_base_url', apiBase);
+    setMetadata('com.sxbvpn.ROOT_APPROVAL_PUBLIC_KEY', rootAuthorityForOrigin(apiBase));
     app['meta-data'] = app['meta-data'].filter(entry => ![
       'com.sxbvpn.BACKEND_SPKI_PINS', 'com.sxbvpn.BACKEND_SPKI_REQUIRED',
     ].includes(entry.$?.['android:name']));

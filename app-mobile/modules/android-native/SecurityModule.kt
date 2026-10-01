@@ -70,7 +70,8 @@ object SecurityModule {
      * Politique d'application des détections, explicite et unique.
      *
      * Les sondes locales sont des observations, jamais une autorite de
-     * revocation. Le serveur applique la politique a la session concernee.
+     * revocation du compte. L'exception root au demarrage est geree
+     * separement par SxbRootAccess, jamais par le score de cet audit.
      */
     @Suppress("UNUSED_PARAMETER")
     fun shouldBlock(report: SecurityReport): Boolean = false
@@ -207,7 +208,7 @@ object SecurityModule {
 
     // ── Détection Root ────────────────────────────────────────────────────────
     fun isRooted(ctx: Context): Boolean {
-        return checkSuBinary() || checkRootApps(ctx) || checkRootPaths() || checkBuildTags()
+        return checkSuBinary() || checkRootApps(ctx) || checkRootPaths()
     }
 
     private fun checkSuBinary(): Boolean {
@@ -232,12 +233,15 @@ object SecurityModule {
             "com.kingroot.kinguser",
             "com.kingo.root",
         )
-        return try {
-            val pm = ctx.packageManager
-            rootPkgs.any { pkg ->
-                try { pm.getPackageInfo(pkg, 0); true } catch (_: Exception) { false }
+        val pm = ctx.packageManager
+        return rootPkgs.any { pkg ->
+            try { pm.getPackageInfo(pkg, 0); true }
+            catch (_: android.content.pm.PackageManager.NameNotFoundException) { false }
+            catch (error: Exception) {
+                Log.e(TAG, "ROOT_CHECK_UNAVAILABLE", error)
+                throw IllegalStateException("ROOT_CHECK_UNAVAILABLE", error)
             }
-        } catch (_: Exception) { false }
+        }
     }
 
     private fun checkRootPaths(): Boolean {
@@ -249,11 +253,6 @@ object SecurityModule {
             "/sbin/.magisk", "/data/adb/magisk",
         )
         return paths.any { File(it).exists() }
-    }
-
-    private fun checkBuildTags(): Boolean {
-        val tags = Build.TAGS ?: ""
-        return tags.contains("test-keys")
     }
 
     // ── Détection Frida ───────────────────────────────────────────────────────

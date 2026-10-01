@@ -26,6 +26,7 @@ process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'synthetic-security-test-access-secret-not-production-0123456789';
 process.env.REFRESH_SECRET = 'synthetic-security-test-refresh-secret-not-production-0123456789';
 process.env.ENCRYPTION_KEY = 'synthetic-test-key'.padEnd(32, 'x');
+process.env.ROOT_APPROVAL_SECRET = createHash('sha256').update('synthetic-root-approval-test-only-secret').digest('hex');
 process.env.NODE_PATH = [path.join(root, 'backend', 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
 Module._initPaths();
 const require = createRequire(path.join(root, 'backend', 'package.json'));
@@ -513,6 +514,58 @@ try {
     method, headers: headers(a, method, target, body ? JSON.stringify(body) : '', operator.token,
       { 'X-SXB-Security-Unlock': operator === owner ? unlock.data.unlockToken : superUnlock.data.unlockToken }),
   });
+  const rootPath = '/api/mobile-security/root-access';
+  const rootCredential = 'SXB-ROOT-ACCESS-1';
+  const rootObservation = actor => ({ publicKey: actor.encoded, rooted: true, deviceModel: 'SYNTHETIC ROOT FIXTURE' });
+  const submitRoot = actor => request(actor, rootPath, rootObservation(actor), rootCredential);
+  for (const actor of [a, b]) {
+    const observation = await submitRoot(actor);
+    check('actual signed root request succeeds before root approval', observation.status, 200);
+    const receipt = JSON.parse(observation.data.payload);
+    check('root request cannot approve itself', receipt.status, 'pending');
+    const denied = await request(actor, '/api/mobile/me', undefined, actor.tokens.accessToken);
+    check('known rooted client is refused without dashboard approval', denied.data.code, 'ROOT_APPROVAL_REQUIRED');
+    check('root denial does not delete or suspend the account',
+      (await prisma.vpnClient.findUniqueOrThrow({ where: { id: actor.client.id } })).status, 'active');
+  }
+  const keyA = hash(Buffer.from(a.encoded, 'base64')), keyB = hash(Buffer.from(b.encoded, 'base64'));
+  const unknownRoot = device();
+  check('a fresh rooted installation can register without a business activation',
+    (await submitRoot(unknownRoot)).status, 200);
+  const unknownRootKey = hash(Buffer.from(unknownRoot.encoded, 'base64'));
+  const ownerRootList = await investigate(owner, '/api/security/root-devices');
+  const superRootList = await investigate(superOperator, '/api/security/root-devices');
+  check('owner sees both assigned root devices and the unassigned request', ownerRootList.data.total, 3);
+  check('super admin root count excludes owner-private and unassigned devices', superRootList.data.total, 1);
+  check('super admin sees only its permitted root installation', superRootList.data.devices[0].keyId, keyA);
+  for (const operator of [admin, support]) {
+    check('lower roles cannot read root approvals', (await request(a, '/api/security/root-devices', undefined, operator.token)).status, 404);
+    check('lower roles cannot approve root by calling the API directly',
+      (await request(a, `/api/security/root-devices/${keyA}/decision`, { status: 'approved', revision: 1 }, operator.token)).status, 404);
+  }
+  check('dashboard role without unlock cannot approve root', (await request(a,
+    `/api/security/root-devices/${keyA}/decision`, { status: 'approved', revision: 1 }, owner.token)).status, 423);
+  for (const hiddenKey of [keyB, unknownRootKey]) {
+    check('super admin cannot approve hidden or unassigned root devices',
+      (await investigate(superOperator, `/api/security/root-devices/${hiddenKey}/decision`,
+        { status: 'approved', revision: 1 })).status, 404);
+  }
+  check('scoped dashboard root approval succeeds', (await investigate(superOperator,
+    `/api/security/root-devices/${keyA}/decision`, { status: 'approved', revision: 1 })).status, 200);
+  check('approved root client regains normal business access', (await request(a, '/api/mobile/me', undefined, a.tokens.accessToken)).status, 200);
+  check('observation preserves the actual dashboard decision', JSON.parse((await submitRoot(a)).data.payload).status, 'approved');
+  check('stale dashboard root revision cannot reverse a newer decision', (await investigate(owner,
+    `/api/security/root-devices/${keyA}/decision`, { status: 'denied', revision: 1 })).status, 409);
+  check('root withdrawal succeeds with its current revision', (await investigate(owner,
+    `/api/security/root-devices/${keyA}/decision`, { status: 'denied', revision: 2 })).status, 200);
+  check('withdrawn root exception is not authorized by another observation',
+    JSON.parse((await submitRoot(a)).data.payload).status, 'denied');
+  check('withdrawn root client is blocked without logging out or deleting profiles',
+    (await request(a, '/api/mobile/me', undefined, a.tokens.accessToken)).status, 403);
+  check('owner can approve an unassigned installation before activation', (await investigate(owner,
+    `/api/security/root-devices/${unknownRootKey}/decision`, { status: 'approved', revision: 1 })).status, 200);
+  await investigate(owner, `/api/security/root-devices/${keyA}/decision`, { status: 'approved', revision: 3 });
+  await investigate(owner, `/api/security/root-devices/${keyB}/decision`, { status: 'approved', revision: 1 });
   const marker = `privacy-${suffix}`;
   const privateTime = new Date(Date.now() + 120_000);
   const privateEvents = [

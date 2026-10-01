@@ -7,6 +7,7 @@ import { deviceIdFromRequest, loadMobileClient, mobileClientOwner } from "../ser
 import { deviceAccessStatus, deviceAccessFailure, sessionInvalidFailure, MobileAccessError } from "../services/access-lifecycle";
 import { checkSession, consumeSessionProof, recordMobileSecurityRefusal } from "../services/mobile-session-security";
 import { verifyMobileProof, type SecurityClaims } from "../services/mobile-proof";
+import { clientRootAccessAllowed } from "../services/root-access";
 
 export interface TokenPayload extends SecurityClaims {
   userId: string;
@@ -53,6 +54,9 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       const state = deviceAccessStatus(client, mobileClientOwner(client));
       if (state !== "active") return res.status(403).json(deviceAccessFailure(state));
       await authorizeDeviceProof(req, { ...decoded, clientId: client!.id }, token);
+      if (!await clientRootAccessAllowed(client!.deviceKeyId)) {
+        return res.status(403).json({ code: "ROOT_APPROVAL_REQUIRED", preserveLocalData: true });
+      }
       req.user = { ...decoded, role: "CLIENT", permissions: [] };
       return next();
     }
@@ -138,6 +142,9 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       const state = deviceAccessStatus(client, mobileClientOwner(client));
       if (state !== "active") return res.status(403).json(deviceAccessFailure(state));
       await authorizeDeviceProof(req, { ...decoded, clientId: client!.id }, token);
+      if (!await clientRootAccessAllowed(client!.deviceKeyId)) {
+        return res.status(403).json({ code: "ROOT_APPROVAL_REQUIRED", preserveLocalData: true });
+      }
     }
 
     async function authorizeDeviceProof(req: Request, claims: TokenPayload, token: string) {

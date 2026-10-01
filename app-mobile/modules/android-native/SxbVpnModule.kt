@@ -53,6 +53,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     private var logReceiver: BroadcastReceiver? = null
     private var accessReceiver: BroadcastReceiver? = null
     private var usageReceiver: BroadcastReceiver? = null
+    private var rootReceiver: BroadcastReceiver? = null
     @Volatile private var usageReportingEnabled = false
     private var usageTaskId: Int? = null
     private val accessExecutor = Executors.newSingleThreadExecutor { action ->
@@ -125,6 +126,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     override fun getConstants(): Map<String, Any> = mapOf(
         "distribution" to SxbPrivacyPolicy.distribution(reactApplicationContext),
         "sshDirectVersion" to 1,
+        "rootApprovalVersion" to 1,
     )
 
     @ReactMethod
@@ -170,7 +172,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             vpnPermissionPromise = promise
             activity.startActivityForResult(vpnIntent, VPN_REQUEST_CODE)
         } catch (e: Exception) {
-            val code = e.message?.takeIf { it == "VPN_PERMISSION_REQUIRED" }
+            val code = e.message?.takeIf { it in setOf("VPN_PERMISSION_REQUIRED", "ROOT_APPROVAL_REQUIRED", "ROOT_CHECK_UNAVAILABLE") }
                 ?: "PERMISSION_ERROR"
             promise.reject(code, e.message ?: "Erreur permission VPN", e)
         }
@@ -304,7 +306,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
         } catch (e: Exception) {
             SxbSecureLogger.error(SxbSecureLogger.VpnEvent.MODULE_REJECTED, e)
-            val code = e.message?.takeIf { it == "VPN_PERMISSION_REQUIRED" }
+            val code = e.message?.takeIf { it in setOf("VPN_PERMISSION_REQUIRED", "ROOT_APPROVAL_REQUIRED", "ROOT_CHECK_UNAVAILABLE") }
                 ?: "START_ERROR"
             promise.reject(code, e.message ?: "Erreur démarrage VPN", e)
         }
@@ -528,6 +530,32 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     }
 
     @ReactMethod
+    fun checkRootAppAccess(promise: Promise) {
+        Thread({
+            try { promise.resolve(SxbRootAccess.check(reactApplicationContext).toString()) }
+            catch (error: Exception) {
+                try { SxbVpnService.instance?.stopForAccess() }
+                catch (stopError: Exception) { android.util.Log.e("SXB-RootAccess", "ROOT_TUNNEL_STOP_FAILED", stopError) }
+                promise.reject("ROOT_CHECK_UNAVAILABLE", "Root access could not be confirmed", error)
+            }
+        }, "SXB-RootStartup").start()
+    }
+
+    @ReactMethod
+    fun exitForRootAccess(message: String) {
+        reactApplicationContext.runOnUiQueueThread {
+            try {
+                if (SxbRootAccess.state(reactApplicationContext).getBoolean("allowed")) return@runOnUiQueueThread
+                android.widget.Toast.makeText(reactApplicationContext, message.take(300), android.widget.Toast.LENGTH_LONG).show()
+                reactApplicationContext.currentActivity?.finishAndRemoveTask()
+            } catch (error: Exception) {
+                android.util.Log.e("SXB-RootAccess", "ROOT_EXIT_FAILED", error)
+                reactApplicationContext.currentActivity?.finishAndRemoveTask()
+            }
+        }
+    }
+
+    @ReactMethod
     fun signBackendRequest(method: String, url: String, body: String, credential: String, promise: Promise) {
         accessExecutor.execute {
             try { promise.resolve(SxbDeviceProof.headers(reactApplicationContext, method, url, body, credential).toString()) }
@@ -677,6 +705,12 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                     "SxbUsageReport", Arguments.createMap(), 180_000L, true,
                 ))
             }
+            rootReceiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: Intent?) {
+                    val state = i?.getStringExtra("state") ?: return
+                    sendEvent("onRootAppAccessChange", Arguments.createMap().apply { putString("state", state) })
+                }
+            }
         }
 
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -688,6 +722,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             ctx.registerReceiver(logReceiver,    IntentFilter(SxbVpnService.BROADCAST_LOG),    flags)
             ctx.registerReceiver(accessReceiver, IntentFilter(SxbAccessControl.BROADCAST), flags)
             ctx.registerReceiver(usageReceiver, IntentFilter("com.sxbvpn.USAGE_TICK"), flags)
+            ctx.registerReceiver(rootReceiver, IntentFilter(SxbRootAccess.BROADCAST), flags)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             ctx.registerReceiver(statusReceiver, IntentFilter(SxbVpnService.BROADCAST_STATUS))
@@ -697,6 +732,8 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             ctx.registerReceiver(accessReceiver, IntentFilter(SxbAccessControl.BROADCAST))
             @Suppress("UnspecifiedRegisterReceiverFlag")
             ctx.registerReceiver(usageReceiver, IntentFilter("com.sxbvpn.USAGE_TICK"))
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            ctx.registerReceiver(rootReceiver, IntentFilter(SxbRootAccess.BROADCAST))
         }
 
         SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
@@ -707,10 +744,12 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         try { reactApplicationContext.unregisterReceiver(logReceiver)    } catch (_: Exception) {}
         try { reactApplicationContext.unregisterReceiver(accessReceiver) } catch (_: Exception) {}
         try { reactApplicationContext.unregisterReceiver(usageReceiver) } catch (_: Exception) {}
+        try { reactApplicationContext.unregisterReceiver(rootReceiver) } catch (_: Exception) {}
         statusReceiver = null
         logReceiver    = null
         accessReceiver = null
         usageReceiver = null
+        rootReceiver = null
         usageReportingEnabled = false
     }
 }

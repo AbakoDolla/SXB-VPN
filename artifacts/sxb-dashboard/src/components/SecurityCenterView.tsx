@@ -4,6 +4,7 @@ import {
   Download, RefreshCw, ShieldAlert, ShieldCheck, Trash2, UnlockKeyhole,
 } from "lucide-react";
 import SecurityInvestigationPanel, { exportSecurityPage } from "./SecurityInvestigationPanel";
+import RootDeviceApprovals from "./RootDeviceApprovals";
 import { useTranslation } from "../contexts/I18nContext";
 import { resolveTranslation } from "../lib/i18n";
 import type { Language } from "../lib/language";
@@ -682,7 +683,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
             {notificationWarning && <p role="status" className="w-full text-sm text-slate-300">{t(notificationWarning)}</p>}
           </div>
           <nav aria-label={t("operations.security.investigationTitle")} className="flex flex-wrap gap-2 text-sm text-slate-200">
-            {[["security-events", "eventsTitle"], ["security-investigation", "investigationTitle"], ["security-policy", "policyNavigation"], ["security-passkeys", "passkeysTitle"]].map(([id, label]) =>
+            {[["security-root-devices", "root.title"], ["security-events", "eventsTitle"], ["security-investigation", "investigationTitle"], ["security-policy", "policyNavigation"], ["security-passkeys", "passkeysTitle"]].map(([id, label]) =>
               <a key={id} href={`#${id}`} className="rounded-xl border border-[#263149] px-3 py-2 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400">{t(`operations.security.${label}`)}</a>)}
           </nav>
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -702,6 +703,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
             ))}
           </section>
 
+          <RootDeviceApprovals key={`root:${unlockToken}`} token={unlockToken!} autoRefresh={autoRefresh} />
           <SecurityInvestigationPanel key={unlockToken} token={unlockToken!} owner={isOwner}
             onInspect={sessionId => {
               setFilters({ severity: "", eventType: "", acknowledged: "", userId: "", deviceId: "", sessionId, from: "", to: "", riskLevel: "", search: "" });

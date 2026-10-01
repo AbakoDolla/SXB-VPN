@@ -145,6 +145,7 @@ object SxbAccessControl {
 
     @Synchronized
     fun checkStart(context: Context, config: JSONObject, checkAttempt: Boolean = true) {
+        SxbRootAccess.checkStart(context)
         check(SxbPrivacyPolicy.vpnAllowed(context)) { "PRIVACY_CONSENT_REQUIRED" }
         load(context)
         check(!signedOut && !storageFailed) { "ACCESS_SESSION_REQUIRED" }

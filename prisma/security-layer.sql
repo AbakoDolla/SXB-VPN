@@ -37,4 +37,16 @@ ALTER TABLE security_events ADD COLUMN IF NOT EXISTS "sessionId" TEXT,
   ADD COLUMN IF NOT EXISTS "riskLevel" TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS "security_events_eventKey_key" ON security_events ("eventKey");
 CREATE INDEX IF NOT EXISTS "security_events_sessionId_createdAt_idx" ON security_events ("sessionId", "createdAt");
+CREATE TABLE IF NOT EXISTS root_device_approvals (
+  "keyId" TEXT PRIMARY KEY, "publicKey" TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied')),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+  "clientId" TEXT REFERENCES vpn_clients(id) ON DELETE SET NULL ON UPDATE CASCADE,
+  "deviceModel" TEXT, "appVersion" TEXT,
+  "firstSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "lastSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "decidedAt" TIMESTAMP(3), "decidedById" TEXT
+);
+CREATE INDEX IF NOT EXISTS "root_device_approvals_clientId_idx" ON root_device_approvals ("clientId");
+CREATE INDEX IF NOT EXISTS "root_device_approvals_status_lastSeenAt_idx" ON root_device_approvals (status, "lastSeenAt");
 COMMIT;

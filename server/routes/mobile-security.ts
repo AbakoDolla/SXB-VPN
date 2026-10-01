@@ -40,8 +40,24 @@ import {
 } from '../services/mobile-risk';
 import { signalDepuisAttestation, verifierAttestation } from '../services/play-integrity';
 import { readSecurityPolicy } from '../services/security-policy';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { observeRootDevice, RootAccessError } from '../services/root-access';
 
 const router = Router();
+
+router.post('/root-access', rateLimit({
+  windowMs: 60000, limit: 30, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: req => ipKeyGenerator(req.ip || 'unknown'),
+}), async (req, res) => {
+  try { return res.json(await observeRootDevice(req, req.body)); }
+  catch (error) {
+    if (error instanceof RootAccessError) return res.status(error.status).json({ code: error.code });
+    if (error instanceof MobileAccessError) return res.status(error.status).json({ code: error.body.reason || error.body.code });
+    if (error instanceof z.ZodError) return res.status(400).json({ code: 'ROOT_REQUEST_INVALID' });
+    console.warn('[security] ROOT_ACCESS_UNAVAILABLE');
+    return res.status(503).json({ code: 'ROOT_ACCESS_UNAVAILABLE' });
+  }
+});
 
 const eventSchema = z.object({
   id: z.string().uuid(), eventType: z.enum(['VPN_STARTED', 'VPN_STOPPED', 'VPN_REVOKED', 'VPN_CONFLICT']),

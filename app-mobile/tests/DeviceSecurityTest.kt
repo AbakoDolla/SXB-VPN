@@ -8,6 +8,8 @@ import org.json.JSONObject
 import java.io.File
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
+import java.security.KeyPairGenerator
+import java.security.Signature
 
 private var checks = 0
 private fun verify(value: Boolean, label: String) {
@@ -56,6 +58,55 @@ fun main(args: Array<String>) {
     rejects("observer still refuses another API origin") {
         SxbBackendTls.protect(tlsContext, URL("https://other.invalid/api/x").openConnection() as HttpsURLConnection)
     }
+
+    val rootSigner = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair()
+    val rootKey = Base64.encodeToString(rootSigner.public.encoded, Base64.NO_WRAP)
+    val rootDevice = "a".repeat(64)
+    val now = System.currentTimeMillis()
+    fun rootReceipt(status: String, device: String = rootDevice, issued: Long = now,
+        expires: Long = now + SxbRootLeasePolicy.MAX_AGE_MS): JSONObject {
+        val payload = JSONObject().put("scope", SxbRootLeasePolicy.CREDENTIAL).put("version", 1)
+            .put("keyId", device).put("revision", 2).put("status", status)
+            .put("issuedAt", issued).put("expiresAt", expires).toString()
+        val signature = Signature.getInstance("SHA256withECDSA").apply {
+            initSign(rootSigner.private); update(payload.toByteArray(Charsets.UTF_8))
+        }.sign()
+        return JSONObject().put("payload", payload).put("signature", Base64.encodeToString(signature, Base64.NO_WRAP))
+            .put("publicKey", rootKey)
+    }
+    val approved = SxbRootLeasePolicy.verify(rootReceipt("approved"), rootDevice, rootKey, now)
+    verify(SxbRootLeasePolicy.allowed(approved, now), "signed dashboard root approval is usable without Internet")
+    verify(!SxbRootLeasePolicy.allowed(approved, now + SxbRootLeasePolicy.MAX_AGE_MS),
+        "root exception expires at the exact 24-hour boundary")
+    for (status in listOf("pending", "denied")) {
+        verify(!SxbRootLeasePolicy.allowed(SxbRootLeasePolicy.verify(rootReceipt(status), rootDevice, rootKey, now), now),
+            "$status never grants a root exception")
+    }
+    rejects("another installation cannot reuse a signed root approval") {
+        SxbRootLeasePolicy.verify(rootReceipt("approved", "b".repeat(64)), rootDevice, rootKey, now)
+    }
+    val forged = rootReceipt("denied").apply { put("payload", getString("payload").replace("denied", "approved")) }
+    rejects("changing a cached denial into approval breaks the server signature") {
+        SxbRootLeasePolicy.verify(forged, rootDevice, rootKey, now)
+    }
+    rejects("root receipts cannot exceed the documented offline limit") {
+        SxbRootLeasePolicy.verify(rootReceipt("approved", expires = now + SxbRootLeasePolicy.MAX_AGE_MS + 1), rootDevice, rootKey, now)
+    }
+    rejects("future-dated root approval cannot hide a clock rollback") {
+        SxbRootLeasePolicy.verify(rootReceipt("approved", issued = now + 90001), rootDevice, rootKey, now)
+    }
+    rejects("negative issue time cannot overflow root lease lifetime validation") {
+        SxbRootLeasePolicy.verify(rootReceipt("approved", issued = -1, expires = Long.MAX_VALUE), rootDevice, rootKey, now)
+    }
+    rejects("risk scoring or arbitrary statuses cannot approve a root device") {
+        SxbRootLeasePolicy.verify(rootReceipt("LOW"), rootDevice, rootKey, now)
+    }
+    val deniedNewer = JSONObject(approved.toString()).put("status", "denied").put("revision", 3)
+    verify(!SxbRootLeasePolicy.accepts(deniedNewer, approved), "a late root approval cannot replace a newer dashboard denial")
+    verify(!SxbRootLeasePolicy.accepts(approved, JSONObject(approved.toString()).put("issuedAt", now - 1)),
+        "a response from an older refresh cannot roll back the same root decision")
+    verify(SxbRootLeasePolicy.accepts(deniedNewer, JSONObject(approved.toString()).put("revision", 4)),
+        "a newer dashboard approval may replace an earlier denial")
 
     val config = """{"securitySessionId":"original","securityGeneration":7,"securityClientId":"client-a","connectionId":"connection-a","usageSessionId":"usage-a","accessAttempt":"attempt-a","password":"synthetic-sensitive","token":"synthetic-sensitive","host":"private.example.invalid"}"""
     val revoked = RevokeHarness().apply { configJson = config }
@@ -121,6 +172,12 @@ fun main(args: Array<String>) {
     permissionRejects("old attempt cannot stop or reuse the new explicit connection") {
         AccessHarness.checkStart(permission, attempt)
     }
+    permission.rootAllowed = false
+    permissionRejects("a denied root device cannot start even with Android VPN permission and valid account access") {
+        AccessHarness.checkStart(permission, current)
+    }
+    permission.rootAllowed = true
+    AccessHarness.checkStart(permission, current)
 
     val bounded = Context()
     repeat(100) { SxbSecurityMonitor.record(bounded, "VPN_OBSERVATION", config) }

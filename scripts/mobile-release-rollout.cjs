@@ -43,7 +43,7 @@ async function rollout(db, options) {
   const next = {
     id: current?.id || randomUUID(), versionCode: options.build.versionCode, versionName: options.build.versionName,
     apkUrl: APK_URL, apkSha256: options.build.apkSha256,
-    notes: 'SSH direct vers le serveur du profil, sans passerelle SXB ni TLS ajouté. Actualisez une fois les anciens profils à ticket. Quotas, payload et arrêt lorsqu’un autre VPN prend la place conservés.',
+    notes: 'Appareils rootés refusés au lancement sauf approbation dans le Centre de sécurité du dashboard. SSH direct, quotas et arrêt immédiat lorsqu’un autre VPN prend la place conservés.',
     minSupportedCode: 0, forceUpdate: false, active: true,
     targetRoles: current?.targetRoles ?? ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
     targetDeviceIds: [], publishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),

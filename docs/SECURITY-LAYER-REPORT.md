@@ -1,5 +1,40 @@
 # Rapport A-T : couche de securite additive SXB VPN
 
+**Politique root demandee le 1er octobre 2026 :** une installation Android
+detectee comme rootee est refusee avant montage de l'identite, de la navigation
+ou du fournisseur VPN. Une exception est decidee uniquement dans
+Administration > Centre de securite > Appareils rootes, derriere le verrou
+existant. OWNER voit tout et les demandes non rattachees ; SUPER_ADMIN ne voit
+et ne modifie que les demandes rattachees a son perimetre non-OWNER.
+ADMIN, SUPPORT, RESELLER et CLIENT n'ont aucune voie d'approbation.
+L'approbation ne cree ni session metier, ni forfait, ni quota.
+
+La decision par cle d'installation est signee par une autorite dediee dont
+le secret aleatoire reste serveur. Sa cle publique de verification, obtenue
+par operation controlee, est compilee dans l'APK ; une reponse auto-signee
+ou un changement de cache local ne peut pas creer une exception. Ce n'est
+pas un pin de certificat TLS. Aucune cle ENCRYPTION_KEY/JWT par defaut ne sert
+de secret de signature. La migration est additive, sans approbation automatique.
+
+L'exception signee expire apres 24 h maximum. Une exception deja valide permet
+le demarrage local sans appel Internet pre-tunnel ; un appareil non approuve
+ne voit aucun ecran protege et son activite est fermee immediatement.
+La demande d'exception part en arriere-plan, avec preuve de possession de cle.
+Un premier contact API est necessaire pour rendre visible puis recuperer une
+approbation. Les retraits atteignent l'appareil lors du prochain contact API
+(surveillance toutes les minutes quand le processus est vivant), pas a travers
+un lien hors ligne inexistant. L'echec de stockage d'une decision echoue ferme
+en memoire, et une ancienne revision ne peut ecraser une decision plus recente.
+
+Les applications/chemins su et root sont des observations locales contournables
+sur un processus compromis ; les seules build tags test-keys ne sont plus
+considerees comme preuve de root. Aucun bannissement d'emulateur, aucune
+suspension de compte et aucun effacement du ledger ne sont ajoutes.
+La politique ne promet pas une detection inviolable du root masque.
+Android conserve un seul VPN par utilisateur/profil : le remplacement par
+un autre service ferme immediatement TUN et sockets SSH et annule les reprises.
+Cela ne detecte pas une capture root sans remplacement du VPN. Aucun ADB.
+
 **Etat courant, retrait demande le 30 septembre 2026 :** le pinning client,
 la generation locale de permission et la passerelle SSH imposee sont retires.
 Les profils SSH retrouvent leur serveur et identite fournisseur par le

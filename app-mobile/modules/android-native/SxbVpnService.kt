@@ -1179,7 +1179,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
          */
         private val PERMANENT_ERROR_CODES = setOf(
             "CONFIG_INVALID", "CONFIG_UNSUPPORTED", "USAGE_CHECKPOINT_UNAVAILABLE",
-            "VPN_PERMISSION_REQUIRED", "SSH_DIRECT_SYNC_REQUIRED",
+            "VPN_PERMISSION_REQUIRED", "SSH_DIRECT_SYNC_REQUIRED", "ROOT_APPROVAL_REQUIRED", "ROOT_CHECK_UNAVAILABLE",
         )
 
         /**
@@ -2951,6 +2951,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val lower = message.lowercase(Locale.ROOT)
         return when {
             lower.contains("privacy_consent_required") -> "PRIVACY_CONSENT_REQUIRED"
+            lower.contains("root_approval_required") -> "ROOT_APPROVAL_REQUIRED"
+            lower.contains("root_check_unavailable") -> "ROOT_CHECK_UNAVAILABLE"
             lower.contains("ssh_socket_protect_failed") -> "SSH_SOCKET_PROTECT_FAILED"
             lower.contains("ssh_direct_sync_required") -> "SSH_DIRECT_SYNC_REQUIRED"
             lower.contains("vpn_permission_required") -> "VPN_PERMISSION_REQUIRED"
