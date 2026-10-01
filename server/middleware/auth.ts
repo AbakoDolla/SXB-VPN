@@ -53,8 +53,8 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       const client = await loadMobileClient(decoded, deviceIdFromRequest(req));
       const state = deviceAccessStatus(client, mobileClientOwner(client));
       if (state !== "active") return res.status(403).json(deviceAccessFailure(state));
-      await authorizeDeviceProof(req, { ...decoded, clientId: client!.id }, token);
-      if (!await clientRootAccessAllowed(client!.deviceKeyId)) {
+      const keyId = await authorizeDeviceProof(req, { ...decoded, clientId: client!.id }, token);
+      if (!await clientRootAccessAllowed(keyId)) {
         return res.status(403).json({ code: "ROOT_APPROVAL_REQUIRED", preserveLocalData: true });
       }
       req.user = { ...decoded, role: "CLIENT", permissions: [] };
@@ -141,15 +141,15 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       const client = await loadMobileClient({ ...decoded, role: "CLIENT" }, deviceIdFromRequest(req));
       const state = deviceAccessStatus(client, mobileClientOwner(client));
       if (state !== "active") return res.status(403).json(deviceAccessFailure(state));
-      await authorizeDeviceProof(req, { ...decoded, clientId: client!.id }, token);
-      if (!await clientRootAccessAllowed(client!.deviceKeyId)) {
+      const keyId = await authorizeDeviceProof(req, { ...decoded, clientId: client!.id }, token);
+      if (!await clientRootAccessAllowed(keyId)) {
         return res.status(403).json({ code: "ROOT_APPROVAL_REQUIRED", preserveLocalData: true });
       }
     }
 
-    async function authorizeDeviceProof(req: Request, claims: TokenPayload, token: string) {
+    async function authorizeDeviceProof(req: Request, claims: TokenPayload, token: string): Promise<string | null> {
       const bound = await checkSession(claims);
-      if (!bound) return;
+      if (!bound) return null;
       const proof = verifyMobileProof(req, bound.client.devicePublicKey!, token, claims);
       // These handlers consume inside their accounting/session transaction.
       if (["/api/mobile/vpn/traffic", "/api/mobile/vpn/usage", "/api/mobile/vpn/session",
@@ -157,9 +157,10 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
            "/api/provision/ssh-relay/refresh"].includes(req.originalUrl.split("?")[0]) ||
           ["/vpn/traffic", "/vpn/usage", "/vpn/session"].includes(req.path) ||
           (req.baseUrl.endsWith("/provision") && ["/activate", "/sync", "/ssh-relay/refresh"].includes(req.path)) ||
-          (req.baseUrl.endsWith("/mobile-security") && req.path === "/events")) return;
+          (req.baseUrl.endsWith("/mobile-security") && req.path === "/events")) return proof.keyId;
       if (!prisma) throw new Error("SECURITY_DATABASE_REQUIRED");
       await prisma.$transaction(tx => consumeSessionProof(tx, claims, proof));
+      return proof.keyId;
     }
 
     if (dbRoleName === "RESELLER" && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {

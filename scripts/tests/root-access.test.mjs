@@ -191,4 +191,9 @@ test('native startup enforcement precedes account providers and never calls a lo
   assert.match(access, /fun checkStart[\s\S]*?SxbRootAccess\.checkStart\(context\)/);
   const detector = read('app-mobile/modules/android-native/SecurityModule.kt');
   assert.doesNotMatch(detector.match(/fun isRooted[\s\S]*?^\s{4}}/m)?.[0] || '', /checkBuildTags/);
+  const auth = read('server/middleware/auth.ts');
+  assert.doesNotMatch(auth, /clientRootAccessAllowed\(client!\.deviceKeyId\)/);
+  assert.match(auth, /const keyId = await authorizeDeviceProof[\s\S]*?clientRootAccessAllowed\(keyId\)/);
+  assert.match(auth, /return proof\.keyId/);
+  assert.match(read('server/routes/mobile-access.ts'), /clientRootAccessAllowed\(proof\.keyId\)/);
 });

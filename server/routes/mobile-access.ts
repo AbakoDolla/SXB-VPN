@@ -9,6 +9,7 @@ import { deviceAccessFailure, MobileAccessError } from "../services/access-lifec
 import { checkSession } from "../services/mobile-session-security";
 import { consumeProof, verifyMobileProof, proofFor } from "../services/mobile-proof";
 import { prisma } from "../database";
+import { clientRootAccessAllowed, RootAccessError } from "../services/root-access";
 import {
   readMobileAccessSnapshot, waitForMobileAccess, AccessWaitLimitError, AccessWaitTimeoutError,
   type AccessCredential,
@@ -51,6 +52,9 @@ function credential(req: Request): AccessCredential {
 }
 
 function failure(res: Response, error: unknown) {
+  if (error instanceof RootAccessError) {
+    return res.status(error.status).json({ code: error.code, preserveLocalData: true });
+  }
   if (error instanceof MobileAccessError) return res.status(error.status).json(error.body);
   if (error instanceof z.ZodError) return res.status(400).json({ error: "errors.validation", details: error.issues });
   if (error instanceof AccessWaitLimitError) {
@@ -73,6 +77,7 @@ router.get("/access-state", async (req: Request, res: Response) => {
       const proof = proofFor(req) ?? verifyMobileProof(req, bound.client.devicePublicKey!, req.headers.authorization!.slice(7), identity);
       if (!prisma) throw new Error("SECURITY_DATABASE_REQUIRED");
       await prisma.$transaction(tx => consumeProof(tx, proof));
+      if (!await clientRootAccessAllowed(proof.keyId)) throw new RootAccessError(403, "ROOT_APPROVAL_REQUIRED");
     }
     const query = querySchema.parse(req.query);
     const snapshot = query.revision && query.wait > 0

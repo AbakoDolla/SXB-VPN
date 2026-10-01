@@ -525,6 +525,8 @@ try {
     check('root request cannot approve itself', receipt.status, 'pending');
     const denied = await request(actor, '/api/mobile/me', undefined, actor.tokens.accessToken);
     check('known rooted client is refused without dashboard approval', denied.data.code, 'ROOT_APPROVAL_REQUIRED');
+    check('native access observation also enforces the root decision',
+      (await request(actor, '/api/mobile/access-state', undefined, actor.tokens.accessToken)).data.code, 'ROOT_APPROVAL_REQUIRED');
     check('root denial does not delete or suspend the account',
       (await prisma.vpnClient.findUniqueOrThrow({ where: { id: actor.client.id } })).status, 'active');
   }
@@ -553,6 +555,8 @@ try {
   check('scoped dashboard root approval succeeds', (await investigate(superOperator,
     `/api/security/root-devices/${keyA}/decision`, { status: 'approved', revision: 1 })).status, 200);
   check('approved root client regains normal business access', (await request(a, '/api/mobile/me', undefined, a.tokens.accessToken)).status, 200);
+  check('approved root client regains native observation access',
+    (await request(a, '/api/mobile/access-state', undefined, a.tokens.accessToken)).status, 200);
   check('observation preserves the actual dashboard decision', JSON.parse((await submitRoot(a)).data.payload).status, 'approved');
   check('stale dashboard root revision cannot reverse a newer decision', (await investigate(owner,
     `/api/security/root-devices/${keyA}/decision`, { status: 'denied', revision: 1 })).status, 409);
