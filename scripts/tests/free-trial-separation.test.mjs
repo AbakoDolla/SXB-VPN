@@ -1122,25 +1122,26 @@ test("un « 200 OK » simple est un tunnel ouvert, pas un refus", () => {
   // SSH. Ce 200 tombait dans le refus : on rejetait un tunnel qui venait de
   // s'ouvrir, avec « pas de tunnel sur cette réponse ».
   const natif = source("app-mobile/modules/android-native/SxbVpnService.kt");
-  assert.match(natif, /val deuxCentOuvert = statusCode != null && statusCode in 200\.\.299 && !portal/);
-  assert.match(natif, /&& !deuxCentOuvert/);
-  assert.match(natif, /reason=http_2xx_tunnel/);
+  assert.match(natif, /state\.previousCode == 101 \|\| state\.previousCode in 200\.\.299/);
+  assert.match(natif, /inputStream = deferredRawChain/);
+  assert.match(natif, /reason=http_chain/);
 
   // LE PIÈGE À NE PAS OUVRIR : un portail captif répond lui aussi 200, avec sa
   // page de connexion. La PREUVE décide, jamais le code de statut seul — le
-  // `!portal` ci-dessus est ce qui distingue les deux.
-  assert.match(natif, /bodyLooksPortal = body\.contains\("<html", true\)/);
+  // Le lecteur cadré retire le corps avant d'autoriser la bannière.
+  assert.match(natif, /content\.contains\("<html", true\)/);
   const decisions = natif.slice(
-    natif.indexOf('val errorCode = when {'),
-    natif.indexOf('onEvent("[SXB_DEBUG] NON_TUNNEL_HTTP'),
+    natif.indexOf('private fun readSshPayloadChain('),
+    natif.indexOf('private class WsOutputStream'),
   );
-  assert.ok(decisions.includes('portal -> "CAPTIVE_PORTAL"'));
+  assert.ok(decisions.includes('throw java.io.IOException("CAPTIVE_PORTAL")'));
   assert.ok(decisions.includes('else -> "TUNNEL_REFUSED"'));
-  assert.ok(decisions.indexOf('portal -> "CAPTIVE_PORTAL"') < decisions.indexOf('else -> "TUNNEL_REFUSED"'));
+  assert.ok(decisions.indexOf('throw java.io.IOException("CAPTIVE_PORTAL")') < decisions.indexOf('else -> "TUNNEL_REFUSED"'));
 
   // Le payload lui-même n'a PAS d'en-tête Upgrade : il ne doit surtout pas
   // être traité comme du WebSocket, qui attend une trame binaire 0x82.
-  assert.match(natif, /hasWsUpgradeHeader && hasWsKey && !connectPayload/);
+  assert.match(natif, /val declaredWebsocket = !connectPayload/);
+  assert.match(natif, /if \(requests\.size == 1 && !connectPayload && wantsWebsocket\)/);
 });
 
 test("on voit et on gère les forfaits d'un client DEPUIS la liste des clients", () => {

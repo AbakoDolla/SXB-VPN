@@ -346,15 +346,17 @@ private fun readSshPayloadChain(
             if (next.isEmpty()) break
         }
         val response = headers.toString()
-        val code = Regex("^HTTP/\\d(?:\\.\\d)?\\s+(\\d{3})(?:\\s|\\r)").find(response)
-            ?.groupValues?.get(1)?.toInt() ?: throw java.io.IOException("HTTP_CHAIN_INVALID")
+        val status = Regex("^(HTTP/\\d(?:\\.\\d)?)\\s+(\\d{3})(?:\\s|\\r)").find(response)
+            ?: throw java.io.IOException("HTTP_CHAIN_INVALID")
+        val code = status.groupValues[2].toInt()
         if (code == 101 || code >= 200) state.answeredRequests++
         val location = Regex("(?im)^Location\\s*:\\s*([^\\r\\n]+)").find(response)?.groupValues?.get(1).orEmpty()
         if (listOf("nointernet", "captive", "portal").any { location.contains(it, true) }) {
             throw java.io.IOException("CAPTIVE_PORTAL")
         }
-        // Only an explicitly pipelined payload reaches this parser. Never follow a redirect.
-        onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=${state.responses} status=$code")
+        // The same framing applies to one request and a pipeline; redirects are never followed.
+        if (state.responses == 1) onEvent("[SXB_TRACE] stage=HTTP_RESPONSE status=${status.groupValues[1]} $code")
+        else onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=${state.responses} status=$code")
         val rejection = if (code !in 100..299 && code !in setOf(301, 302, 303, 307, 308)) {
             val errorCode = when (code) {
                 400 -> "HTTP_BAD_REQUEST"
