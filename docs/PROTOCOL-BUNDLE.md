@@ -195,6 +195,18 @@ Reality, HTTPS and other protocols retain their declared encryption.
 SSH itself remains encrypted; removing the extra TLS wrapper does not send
 an SSH password as cleartext over TCP. A plain HTTP payload remains visible.
 
+Pipelined payloads keep their imported request bytes and header boundaries,
+including a final `Upgrade: websocket` without `Sec-WebSocket-Key`. After a
+framed 301/403/101 chain, the client distinguishes a raw SSH banner from
+WebSocket frames before sending its own SSH identification. Framed peers
+receive masked client frames; a cosmetic 101 followed by raw SSH stays raw.
+An advertised WebSocket upgrade can also serve a client-first framed peer.
+Additional HTTP responses after a cosmetic 101 are consumed, even when they
+arrive only after the client's raw banner. The same monotonic deadline,
+16-response and 128-KiB total HTTP limits survive each handoff. A final or
+unframed 403, a captive portal or an unknown post-upgrade byte remains a
+failure; HTTP 101 alone is not proof of SSH authentication or VPN traffic.
+
 Already-installed relay-only profiles contain no supplier credentials.
 They must be provisioned once while the control API is reachable, through
 automatic configuration refresh or an explicit refresh. A migration never

@@ -1163,6 +1163,19 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('reason=connect_payload'));
   });
 
+  it('négocie le dernier Upgrade pipeliné sans exiger ni injecter une clé WebSocket', () => {
+    const start = nativeService.indexOf('if (requests.size > 1) {');
+    const chain = nativeService.slice(start, nativeService.indexOf('transportSocket.soTimeout = 10_000', start));
+    assert.match(chain, /val declaredWebsocket = !connectPayload/);
+    assert.match(chain, /selectPipelinedUpgrade\(rawIn, rawOut, transportSocket, timeout, requests\.size\)/);
+    assert.doesNotMatch(chain, /Sec-WebSocket-Key|WS_KEY_INJECTED/);
+    assert.match(nativeService, /private class SshPayloadChainState/);
+    assert.match(nativeService, /\+\+state\.responses > 16/);
+    assert.match(nativeService, /\+\+state\.totalBytes > 131072/);
+    assert.match(nativeService, /requestCount = requestCount, state = state/);
+    assert.match(nativeService, /else deferredRawChain\(rawIn, transportSocket, timeout, requestCount, state\)/);
+  });
+
   it('prépare le descripteur réseau avant de protéger les sockets SSH', () => {
     assert.ok(nativeService.includes('rawSocket.bind(null)'));
     assert.ok(nativeService.includes('protectSocket(rawSocket)'));

@@ -191,6 +191,15 @@ private fun sendSshPayload(payload: String, rawOut: OutputStream, onEvent: (Stri
     return totalBytes
 }
 
+private class SshPayloadChainState(timeoutMs: Int) {
+    val deadline = System.nanoTime() + timeoutMs.toLong() * 1_000_000
+    var totalBytes = 0
+    var responses = 0
+    var answeredRequests = 0
+    var previousCode = 0
+    var pendingRejection: java.io.IOException? = null
+}
+
 private fun readSshPayloadChain(
     input: java.io.PushbackInputStream,
     socket: Socket,
@@ -198,18 +207,16 @@ private fun readSshPayloadChain(
     onEvent: (String) -> Unit,
     stopAtWebsocketUpgrade: Boolean = false,
     requestCount: Int = 1,
+    state: SshPayloadChainState = SshPayloadChainState(timeoutMs),
 ): String {
     if (requestCount !in 1..16) throw java.io.IOException("HTTP_CHAIN_REQUEST_COUNT_INVALID")
-    val deadline = System.nanoTime() + timeoutMs.toLong() * 1_000_000
-    var totalBytes = 0
-    var pendingRejection: java.io.IOException? = null
     fun readByte(): Int {
-        val remaining = (deadline - System.nanoTime()) / 1_000_000
-        if (remaining <= 0) throw pendingRejection ?: SocketTimeoutException("HTTP_CHAIN_TIMEOUT")
+        val remaining = (state.deadline - System.nanoTime()) / 1_000_000
+        if (remaining <= 0) throw state.pendingRejection ?: SocketTimeoutException("HTTP_CHAIN_TIMEOUT")
         socket.soTimeout = remaining.toInt().coerceAtLeast(1)
-        val value = try { input.read() } catch (error: SocketTimeoutException) { throw pendingRejection ?: error }
-        if (value < 0) throw pendingRejection ?: java.io.EOFException("HTTP_CHAIN_TRUNCATED")
-        if (++totalBytes > 131072) throw java.io.IOException("HTTP_CHAIN_TOO_LARGE")
+        val value = try { input.read() } catch (error: SocketTimeoutException) { throw state.pendingRejection ?: error }
+        if (value < 0) throw state.pendingRejection ?: java.io.EOFException("HTTP_CHAIN_TRUNCATED")
+        if (++state.totalBytes > 131072) throw java.io.IOException("HTTP_CHAIN_TOO_LARGE")
         return value
     }
     fun line(): String {
@@ -263,23 +270,19 @@ private fun readSshPayloadChain(
         }
         return result.toString()
     }
-    var previous = ""
-    var previousCode = 0
-    var count = 0
-    var answeredRequests = 0
     while (true) {
-        val accepted = previousCode == 101 || previousCode in 200..299
+        val accepted = state.previousCode == 101 || state.previousCode in 200..299
         val first = readByte()
         input.unread(first)
-        totalBytes--
+        state.totalBytes--
         if (first != 'H'.code) {
-            if (first == 'S'.code && (previous.isEmpty() || accepted)) {
+            if (first == 'S'.code && (state.responses == 0 || accepted)) {
                 // Leave the SSH banner and binary key exchange untouched.
                 return ""
             }
-            throw pendingRejection ?: java.io.IOException("TUNNEL_REFUSED")
+            throw state.pendingRejection ?: java.io.IOException("TUNNEL_REFUSED")
         }
-        if (++count > 16) throw java.io.IOException("HTTP_CHAIN_TOO_MANY_RESPONSES")
+        if (++state.responses > 16) throw java.io.IOException("HTTP_CHAIN_TOO_MANY_RESPONSES")
         val headers = StringBuilder(line()).append("\r\n")
         while (true) {
             val next = line()
@@ -290,13 +293,13 @@ private fun readSshPayloadChain(
         val response = headers.toString()
         val code = Regex("^HTTP/\\d(?:\\.\\d)?\\s+(\\d{3})(?:\\s|\\r)").find(response)
             ?.groupValues?.get(1)?.toInt() ?: throw java.io.IOException("HTTP_CHAIN_INVALID")
-        if (code == 101 || code >= 200) answeredRequests++
+        if (code == 101 || code >= 200) state.answeredRequests++
         val location = Regex("(?im)^Location\\s*:\\s*([^\\r\\n]+)").find(response)?.groupValues?.get(1).orEmpty()
         if (listOf("nointernet", "captive", "portal").any { location.contains(it, true) }) {
             throw java.io.IOException("CAPTIVE_PORTAL")
         }
         // Only an explicitly pipelined payload reaches this parser. Never follow a redirect.
-        onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=$count status=$code")
+        onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=${state.responses} status=$code")
         val rejection = if (code !in 100..299 && code !in setOf(301, 302, 303, 307, 308)) {
             val errorCode = when (code) {
                 400 -> "HTTP_BAD_REQUEST"
@@ -307,7 +310,7 @@ private fun readSshPayloadChain(
         } else null
         // A framed 403 can answer the intermediate X request, not the final GET.
         // Never scan an unframed error body for a fabricated HTTP/SSH boundary.
-        val intermediateRefusal = code == 403 && answeredRequests < requestCount &&
+        val intermediateRefusal = code == 403 && state.answeredRequests < requestCount &&
             response.startsWith("HTTP/1.1 ") &&
             !Regex("(?im)^Connection\\s*:[^\\r\\n]*\\bclose\\b").containsMatchIn(response) &&
             Regex("(?im)^(Content-Length|Transfer-Encoding)\\s*:").containsMatchIn(response)
@@ -316,10 +319,9 @@ private fun readSshPayloadChain(
         if (content.contains("<html", true) && listOf("nointernet", "captive", "portal").any { content.contains(it, true) }) {
             throw java.io.IOException("CAPTIVE_PORTAL")
         }
+        state.pendingRejection = rejection
+        state.previousCode = code
         if (code == 101 && stopAtWebsocketUpgrade) return response
-        pendingRejection = rejection
-        previous = response
-        previousCode = code
     }
 }
 
@@ -610,51 +612,18 @@ private class SxbPayloadProxy(
 
         if (requests.size > 1) {
             val finalHeaders = requests.last()
-            val explicitWebsocket = !connectPayload &&
-                Regex("(?im)^Upgrade\\s*:\\s*websocket\\s*$").containsMatchIn(finalHeaders) &&
-                Regex("(?im)^Sec-WebSocket-Key\\s*:").containsMatchIn(finalHeaders)
-            if (!explicitWebsocket) {
+            val declaredWebsocket = !connectPayload &&
+                Regex("(?im)^Upgrade\\s*:\\s*websocket\\s*$").containsMatchIn(finalHeaders)
+            if (!declaredWebsocket) {
                 // JSch writes its banner before reading. Defer HTTP parsing until
                 // that read so client-first servers work without an idle handoff
                 // that could leak late HTTP headers/body into the SSH exchange.
-                inputStream = object : InputStream() {
-                    private var ready = false
-                    private fun prepare() {
-                        if (ready) return
-                        val readTimeout = transportSocket.soTimeout
-                        try {
-                            readSshPayloadChain(rawIn, transportSocket, timeout.coerceIn(1000, 120000), onEvent,
-                                requestCount = requests.size)
-                            transportSocket.soTimeout = readTimeout
-                            ready = true
-                            onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_chain")
-                        } catch (error: Exception) {
-                            this@SxbPayloadProxy.close()
-                            throw error
-                        }
-                    }
-                    override fun read(): Int { prepare(); return rawIn.read() }
-                    override fun read(b: ByteArray, off: Int, len: Int): Int {
-                        if (len == 0) return rawIn.read(b, off, len)
-                        prepare()
-                        return rawIn.read(b, off, len)
-                    }
-                    override fun close() = this@SxbPayloadProxy.close()
-                }
+                inputStream = deferredRawChain(rawIn, transportSocket, timeout, requests.size)
                 outputStream = rawOut
                 return
             }
-            val response = readSshPayloadChain(rawIn, transportSocket, timeout.coerceIn(1000, 120000), onEvent,
-                stopAtWebsocketUpgrade = true, requestCount = requests.size)
-            if (response.isEmpty()) {
-                inputStream = rawIn
-                outputStream = rawOut
-                transportSocket.soTimeout = timeout
-                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_chain")
-                return
-            }
-            val prefix = response.toByteArray(Charsets.ISO_8859_1)
-            inputStream = SequenceInputStream(ByteArrayInputStream(prefix), rawIn)
+            selectPipelinedUpgrade(rawIn, rawOut, transportSocket, timeout, requests.size)
+            return
         }
 
         // ── 2. Lire la réponse HTTP du serveur (headers jusqu'à \r\n\r\n) ────
@@ -921,6 +890,86 @@ private class SxbPayloadProxy(
         // → failVpn() → broadcast status=error → RN clearWatchdog() < 45s.
         try { transportSocket.soTimeout = 28_000 } catch (_: Exception) {}
         onEvent("[SXB_TRACE] stage=SSH_BANNER_WAIT timeout_ms=28000")
+    }
+
+    private fun deferredRawChain(
+        rawIn: java.io.PushbackInputStream,
+        transportSocket: Socket,
+        timeout: Int,
+        requestCount: Int,
+        state: SshPayloadChainState? = null,
+    ): InputStream = object : InputStream() {
+        private var ready = false
+        private fun prepare() {
+            if (ready) return
+            val readTimeout = transportSocket.soTimeout
+            val chainTimeout = timeout.coerceIn(1000, 120000)
+            try {
+                readSshPayloadChain(rawIn, transportSocket, chainTimeout, onEvent,
+                    requestCount = requestCount, state = state ?: SshPayloadChainState(chainTimeout))
+                transportSocket.soTimeout = readTimeout
+                ready = true
+                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_chain")
+            } catch (error: Exception) {
+                this@SxbPayloadProxy.close()
+                throw error
+            }
+        }
+        override fun read(): Int { prepare(); return rawIn.read() }
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (len == 0) return rawIn.read(b, off, len)
+            prepare()
+            return rawIn.read(b, off, len)
+        }
+        override fun close() = this@SxbPayloadProxy.close()
+    }
+
+    private fun selectPipelinedUpgrade(
+        rawIn: java.io.PushbackInputStream,
+        rawOut: OutputStream,
+        transportSocket: Socket,
+        timeout: Int,
+        requestCount: Int,
+    ) {
+        val state = SshPayloadChainState(timeout.coerceIn(1000, 120000))
+        fun remaining(): Int {
+            val value = (state.deadline - System.nanoTime()) / 1_000_000
+            if (value <= 0) throw SocketTimeoutException("HTTP_CHAIN_TIMEOUT")
+            return value.toInt().coerceAtLeast(1)
+        }
+        fun select(websocket: Boolean) {
+            inputStream = if (websocket) WsInputStream(rawIn, rawOut, onEvent)
+                else deferredRawChain(rawIn, transportSocket, timeout, requestCount, state)
+            outputStream = if (websocket) WsOutputStream(rawOut, onEvent) else rawOut
+            transportSocket.soTimeout = timeout.coerceAtLeast(1)
+            if (websocket) onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=WEBSOCKET_RFC6455 reason=http_chain")
+            onEvent("[SXB_TRACE] stage=SSH_BANNER_WAIT timeout_ms=${timeout.coerceAtLeast(1)}")
+        }
+        while (true) {
+            val response = readSshPayloadChain(rawIn, transportSocket, remaining(), onEvent,
+                stopAtWebsocketUpgrade = true, requestCount = requestCount, state = state)
+            if (response.isEmpty()) { select(false); return }
+            val advertisesWebsocket =
+                Regex("(?im)^Upgrade\\s*:\\s*websocket\\s*$").containsMatchIn(response) &&
+                Regex("(?im)^Connection\\s*:[^\\r\\n]*\\bupgrade\\b").containsMatchIn(response)
+            transportSocket.soTimeout = minOf(2000, remaining())
+            val first = try { rawIn.read() }
+            catch (_: SocketTimeoutException) {
+                remaining()
+                // A client-first WS peer needs a framed banner; an unadvertised
+                // cosmetic 101 retains the raw client-first SSH path.
+                select(advertisesWebsocket)
+                return
+            }
+            if (first < 0) throw java.io.EOFException("HTTP_CHAIN_TRUNCATED")
+            rawIn.unread(first)
+            when (first) {
+                'S'.code -> { select(false); return }
+                'H'.code -> continue
+                0x01, 0x02, 0x81, 0x82, 0x88, 0x89, 0x8A -> { select(true); return }
+                else -> throw java.io.IOException("TUNNEL_REFUSED")
+            }
+        }
     }
 
     override fun getInputStream(): InputStream  = inputStream!!
