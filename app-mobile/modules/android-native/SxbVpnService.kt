@@ -121,6 +121,15 @@ private fun isIpLiteralHost(value: String): Boolean =
 private val sshSplitDirective = Regex("\\[(delay_split|instant_split|split)\\]", RegexOption.IGNORE_CASE)
 private val sshRotateDirective = Regex("\\[rotate=([^\\r\\n\\]]*)\\]", RegexOption.IGNORE_CASE)
 private val sshRequestLine = Regex("^[A-Z]+\\s+\\S+\\s+HTTP/\\d(?:\\.\\d)?$", RegexOption.IGNORE_CASE)
+private const val SXB_SSH_USER_AGENT = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36"
+
+private fun sshUserAgent(cfg: JSONObject): String {
+    val value = cfg.optStringOrNull("userAgent", SXB_SSH_USER_AGENT).trim().ifEmpty { SXB_SSH_USER_AGENT }
+    if (value.length > 1024 || value.any { it != '\t' && it.code !in 32..126 }) {
+        throw java.io.IOException("SSH_USER_AGENT_INVALID")
+    }
+    return value
+}
 
 private fun expandSshPayloadTokens(
     raw: String,
@@ -198,6 +207,8 @@ private class SshPayloadChainState(timeoutMs: Int) {
     var answeredRequests = 0
     var previousCode = 0
     var pendingRejection: java.io.IOException? = null
+    var preambleLines = 0
+    var preambleBytes = 0
 }
 
 private fun readSshPayloadChain(
@@ -226,6 +237,32 @@ private fun readSshPayloadChain(
             if (value.endsWith("\r\n")) return value.dropLast(2).toString()
         }
         throw java.io.IOException("HTTP_CHAIN_HEADER_TOO_LARGE")
+    }
+    fun acceptPreamble(value: String, bytesAlreadyCounted: Boolean = false) {
+        if (!bytesAlreadyCounted) state.preambleBytes += value.length + 2
+        if (state.preambleBytes > 8192 || ++state.preambleLines > 32 ||
+            value.any { it != '\t' && it.code !in 32..126 }) {
+            throw java.io.IOException("SSH_PREAMBLE_TOO_LARGE")
+        }
+        val text = value.trim()
+        if (text.startsWith("<") || Regex("(?i)(captive|nointernet|portal)").containsMatchIn(text)) {
+            throw java.io.IOException("CAPTIVE_PORTAL")
+        }
+        if (text.startsWith("Content-Length:", true) && !text.substringAfter(':').trim().matches(Regex("[0-9]+"))) {
+            throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+        }
+        onEvent("[SXB_TRACE] stage=SSH_PREAMBLE_SKIPPED lines=${state.preambleLines} bytes=${state.preambleBytes}")
+    }
+    fun skipPreamble() {
+        val value = StringBuilder()
+        while (true) {
+            val byte = readByte()
+            if (++state.preambleBytes > 8192) throw java.io.IOException("SSH_PREAMBLE_TOO_LARGE")
+            if (byte == 10) break
+            if (byte != 9 && byte != 13 && byte !in 32..126) throw java.io.IOException("TUNNEL_REFUSED")
+            value.append(byte.toChar())
+        }
+        acceptPreamble(value.toString().removeSuffix("\r"), bytesAlreadyCounted = true)
     }
     fun body(headers: String): String {
         val lengths = Regex("(?im)^Content-Length\\s*:\\s*([^\\r\\n]+)").findAll(headers).toList()
@@ -280,10 +317,19 @@ private fun readSshPayloadChain(
                 // Leave the SSH banner and binary key exchange untouched.
                 return ""
             }
+            if (accepted && (first in 32..126 || first in listOf(9, 10, 13))) {
+                skipPreamble()
+                continue
+            }
             throw state.pendingRejection ?: java.io.IOException("TUNNEL_REFUSED")
         }
+        val statusLine = line()
+        if (!statusLine.startsWith("HTTP/") && accepted) {
+            acceptPreamble(statusLine)
+            continue
+        }
         if (++state.responses > 16) throw java.io.IOException("HTTP_CHAIN_TOO_MANY_RESPONSES")
-        val headers = StringBuilder(line()).append("\r\n")
+        val headers = StringBuilder(statusLine).append("\r\n")
         while (true) {
             val next = line()
             headers.append(next).append("\r\n")
@@ -623,6 +669,10 @@ private class SxbPayloadProxy(
                 return
             }
             selectPipelinedUpgrade(rawIn, rawOut, transportSocket, timeout, requests.size)
+            return
+        }
+        if (requests.size == 1 && !connectPayload && wantsWebsocket) {
+            selectPipelinedUpgrade(rawIn, rawOut, transportSocket, timeout, 1)
             return
         }
 
@@ -967,7 +1017,10 @@ private class SxbPayloadProxy(
                 'S'.code -> { select(false); return }
                 'H'.code -> continue
                 0x01, 0x02, 0x81, 0x82, 0x88, 0x89, 0x8A -> { select(true); return }
-                else -> throw java.io.IOException("TUNNEL_REFUSED")
+                else -> {
+                    if (first in 32..126 || first in listOf(9, 10, 13)) { select(false); return }
+                    throw java.io.IOException("TUNNEL_REFUSED")
+                }
             }
         }
     }
@@ -1451,7 +1504,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         payload: String,
         host: String,
         port: Int,
-        userAgent: String = "SXB-VPN/Android",
+        userAgent: String = SXB_SSH_USER_AGENT,
         sni: String = "",
     ): String {
         val normalized = expandSshPayloadTokens(payload, host, port, userAgent, sni)
@@ -1521,14 +1574,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
         configuredSni: String,
     ): List<SshTransportStrategy> {
         if (cfg.optStringOrNull("payloadDialect", "") == "protocols-v1") {
-            val exact = expandSshPayloadTokens(rawPayload, host, port, cfg.optStringOrNull("userAgent", "SXB-VPN/Android"), configuredSni)
+            val exact = expandSshPayloadTokens(rawPayload, host, port, sshUserAgent(cfg), configuredSni)
             return listOf(SshTransportStrategy(if (tlsEnabled) "tls_raw" else "raw", tlsEnabled, exact, configuredSni.ifBlank { host }))
         }
         val normalized = normalizePayload(
             rawPayload,
             host,
             port,
-            cfg.optStringOrNull("userAgent", "SXB-VPN/Android"),
+            sshUserAgent(cfg),
             configuredSni,
         )
         val isConnect = sshSplitDirective.replace(normalized, "").trimStart()
@@ -2216,7 +2269,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 (cfg.optStringOrNull("payloadDialect", "") == "protocols-v1" && transport == "payload" && !tlsEnabled && !proxyEnabled)) {
                 "SSH_PAYLOAD_RESPONSE_INVALID"
             }
-            val userAgent = cfg.optStringOrNull("userAgent", "SXB-VPN/Android")
+            val userAgent = sshUserAgent(cfg)
             val udpMode = cfg.optStringOrNull("udpMode", "none").lowercase(Locale.ROOT)
             val udpGatewayHost = cfg.optStringOrNull("udpGatewayHost", "127.0.0.1")
             val udpGatewayPort = cfg.optInt("udpGatewayPort", 7300)

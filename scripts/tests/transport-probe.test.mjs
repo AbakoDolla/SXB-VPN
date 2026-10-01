@@ -6,11 +6,12 @@
  * Exécution : node --experimental-strip-types scripts/tests/transport-probe.test.mjs
  */
 import { strict as assert } from 'node:assert';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import net from 'node:net';
 import tls from 'node:tls';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -75,9 +76,12 @@ console.log('\n══ transport-probe — préflight contre passerelles simulée
   ]);
   const srv = net.createServer((s) => {
     let buf = Buffer.alloc(0);
+    let upgraded = false;
     s.on('data', (d) => {
+      if (upgraded) return;
       buf = Buffer.concat([buf, d]);
       if (buf.includes('\r\n\r\n')) {
+        upgraded = true;
         s.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: czX0test==\r\n\r\n');
         s.write(frame);
         s.end();
@@ -110,15 +114,19 @@ console.log('\n══ transport-probe — préflight contre passerelles simulée
 
 // 5. TLS — certificat auto-signé → handshake OK + CN rapporté
 {
-  const dir = '/tmp/sxb-tls-test';
-  fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(`${dir}/key.pem`)) {
-    execSync(`openssl req -x509 -newkey rsa:2048 -keyout ${dir}/key.pem -out ${dir}/crt.pem -days 2 -nodes -subj "/CN=test.sxb.local"`, { stdio: 'pipe' });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sxb-probe-tls-'));
+  let srv;
+  try {
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048',
+      '-keyout', path.join(dir, 'key.pem'), '-out', path.join(dir, 'crt.pem'),
+      '-days', '2', '-nodes', '-subj', '/CN=test.sxb.local'], { stdio: 'pipe' });
+    srv = tls.createServer(
+      { key: fs.readFileSync(path.join(dir, 'key.pem')), cert: fs.readFileSync(path.join(dir, 'crt.pem')) },
+      (s) => { s.write('SSH-2.0-OpenSSH_TLS_Test\r\n'); s.end(); },
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-  const srv = tls.createServer(
-    { key: fs.readFileSync(`${dir}/key.pem`), cert: fs.readFileSync(`${dir}/crt.pem`) },
-    (s) => { s.write('SSH-2.0-OpenSSH_TLS_Test\r\n'); s.end(); },
-  );
   const port = await listen(srv);
   const payload = 'GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]';
   // La tolérance du certificat auto-signé doit être un choix explicite du profil.

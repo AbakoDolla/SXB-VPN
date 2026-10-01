@@ -121,7 +121,8 @@ object Base64 {
   const deadline = Date.now() + 15000;
   while (!existsSync(peerInfo) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
   assert.ok(existsSync(peerInfo), 'Local SSH data peer did not start');
-  run(process.env.JAVA || 'java', [`-Djavax.net.ssl.trustStore=${store}`,
+  run(process.env.JAVA || 'java', [...(process.env.SXB_SSH_CAPTURE ? [`-Dsxb.test.capture=${process.env.SXB_SSH_CAPTURE}`] : []),
+    `-Djavax.net.ssl.trustStore=${store}`,
     '-Djavax.net.ssl.trustStorePassword=synthetic-test-only', '-cp', `${jar}${path.delimiter}${classpath}`,
     'SshCompatibilityHarnessKt', store, peerInfo]);
 } finally {

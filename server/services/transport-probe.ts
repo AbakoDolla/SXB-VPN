@@ -44,11 +44,12 @@ export interface ProbeReport {
 }
 
 const DEF_TIMEOUT = 8000;
+export const DEFAULT_SSH_USER_AGENT = 'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36';
 
 // ── Substitution du payload (SSH+Payload) ────────────────────────────────────
 export function substitutePayload(
   template: string, host: string, sni?: string | null, port = 443,
-  userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+  userAgent = DEFAULT_SSH_USER_AGENT,
 ): string {
   const tlsServerName = (sni && sni.trim()) || host;
   const random = crypto.randomBytes(6).toString('hex');
@@ -111,7 +112,7 @@ export async function writeSshPayload(socket: net.Socket, payload: string, signa
       if (chunk.delayMs) await pause(chunk.delayMs, undefined, { signal });
       signal.throwIfAborted();
       if (socket.destroyed) throw new Error('RELAY_PAYLOAD_CLOSED');
-      const encoded = Buffer.from(chunk.text, 'utf8');
+      const encoded = Buffer.from(chunk.text, 'latin1');
       await new Promise<void>((resolve, reject) => {
         socket.write(encoded, error => error ? reject(error) : resolve());
       });
@@ -216,43 +217,232 @@ function tlsUpgrade(
 async function probeWsTunnel(
   sock: net.Socket | tls.TLSSocket,
   payload: string,
-  host: string,
   timeoutMs: number,
   steps: ProbeStep[],
 ): Promise<void> {
-  const hasUpgrade = /upgrade:\s*websocket/i.test(payload);
+  const requests = payload.replace(/\[(?:delay_split|instant_split|split)\]/gi, '').split('\r\n\r\n')
+    .filter(request => /^[A-Z]+\s+\S+\s+HTTP\/\d(?:\.\d)?$/i.test(request.split('\r\n')[0].trim()));
+  if (requests.length > 16) throw new Error('PAYLOAD_REQUEST_LIMIT');
+  const finalHeaders = requests.at(-1) || '';
+  const wantsWebsocket = !/^CONNECT /i.test(finalHeaders) && /^upgrade\s*:\s*websocket\s*$/im.test(finalHeaders);
   let request = payload;
-  if (hasUpgrade && !/sec-websocket-key/i.test(payload)) {
-    // Compléter un handshake WS incomplet avec une clé aléatoire jetable
-    request = payload.replace(/(\r\n)(\r\n)/,
-      `\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n$2`);
+  if (requests.length <= 1 && wantsWebsocket && !/^sec-websocket-key\s*:/im.test(finalHeaders)) {
+    request = payload.replace('\r\n\r\n',
+      `\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}` +
+      '\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\n\r\n');
   }
-  await writeSshPayload(sock, request, AbortSignal.timeout(timeoutMs));
-  const head = await readUpTo(sock, 8192, timeoutMs);
-  const text = head.toString('latin1');
-  const statusMatch = text.match(/^HTTP\/\d\.\d (\d{3})/);
-  const code = statusMatch ? Number(statusMatch[1]) : null;
-
-  if (code === 101) steps.push({ event: 'HTTP_STATUS_101', ok: true, detail: 'upgrade accepté' });
-  // Tout 2xx, pas seulement 200 : le moteur mobile accepte la même famille, et
-  // deux verdicts qui divergent sur la même réponse feraient douter du bon.
-  else if (code !== null && code >= 200 && code < 300) {
-    steps.push({ event: 'HTTP_STATUS_200', ok: true, detail: `tunnel HTTP accepté (${code})` });
-  }
-  else steps.push({ event: 'HTTP_STATUS_UNEXPECTED', ok: false, detail: code ? `code ${code}` : 'réponse non-HTTP/vide' });
-
-  if (code === 101 || (code !== null && code >= 200 && code < 300)) {
-    // Le flux sous-jacent doit devenir SSH : chercher 'SSH-' (frames WS incluses)
-    const m = text.match(/SSH-[0-9A-Za-z.\-_ ]+/);
-    if (m) {
-      steps.push({ event: 'SSH_BANNER_RECEIVED', ok: true, detail: `derrière tunnel : ${m[0].slice(0, 48)}` });
-    } else {
-      const more = await readUpTo(sock, 8192, Math.min(timeoutMs, 5000));
-      const m2 = more.toString('latin1').match(/SSH-[0-9A-Za-z.\-_ ]+/);
-      steps.push(m2
-        ? { event: 'SSH_BANNER_RECEIVED', ok: true, detail: `derrière tunnel : ${m2[0].slice(0, 48)}` }
-        : { event: 'SSH_BANNER_MISSING', ok: false, detail: 'tunnel ouvert mais aucun flux SSH détecté (8s)' });
+  // Subscribe through readable before writing: even an immediate response stays buffered.
+  sock.pause();
+  sock.setTimeout(0);
+  const deadline = performance.now() + timeoutMs;
+  let total = 0, responses = 0, answered = 0, preambleLines = 0, preambleBytes = 0;
+  let held: Buffer | undefined;
+  let accepted = false, websocket = false, advertisedWebsocket = false, bannerSent = false;
+  let pendingRefusal = false;
+  const fail = (code: string): never => { throw new Error(code); };
+  const waitReadable = (until: number): Promise<void> => new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      sock.off('readable', ready); sock.off('end', ended); sock.off('close', ended); sock.off('error', failed);
+    };
+    const ready = () => { cleanup(); resolve(); };
+    const ended = () => { cleanup(); reject(new Error(pendingRefusal ? 'SSH_PROBE_HTTP_REFUSED' : 'SSH_PROBE_TRUNCATED')); };
+    const failed = () => { cleanup(); reject(new Error('SSH_PROBE_CLOSED')); };
+    const timer = setTimeout(() => { cleanup(); reject(new Error('SSH_PROBE_TIMEOUT')); }, Math.max(1, until - performance.now()));
+    sock.once('readable', ready); sock.once('end', ended); sock.once('close', ended); sock.once('error', failed);
+    if (sock.readableLength) ready();
+    else if (sock.destroyed || sock.readableEnded) ended();
+  });
+  const read = async (count: number, until = deadline): Promise<Buffer> => {
+    if (performance.now() >= until) fail(pendingRefusal ? 'SSH_PROBE_HTTP_REFUSED' : 'SSH_PROBE_TIMEOUT');
+    if (count < 0 || total + count > 131072) fail('SSH_PROBE_TOO_LARGE');
+    const chunks: Buffer[] = [];
+    let left = count;
+    if (held && left) { chunks.push(held); held = undefined; left--; }
+    while (left) {
+      if (performance.now() >= until) fail(pendingRefusal ? 'SSH_PROBE_HTTP_REFUSED' : 'SSH_PROBE_TIMEOUT');
+      const bytes = sock.read(Math.min(left, sock.readableLength) || left) as Buffer | null;
+      if (bytes) { chunks.push(bytes); left -= bytes.length; continue; }
+      if (sock.destroyed || sock.readableEnded) fail(pendingRefusal ? 'SSH_PROBE_HTTP_REFUSED' : 'SSH_PROBE_TRUNCATED');
+      await waitReadable(until);
     }
+    total += count;
+    return Buffer.concat(chunks, count);
+  };
+  const peek = async (until = deadline): Promise<number> => {
+    const byte = await read(1, until);
+    held = byte; total--;
+    return byte[0];
+  };
+  const line = async (limit = 8192): Promise<string> => {
+    let text = '';
+    while (text.length < limit) {
+      const byte = (await read(1))[0];
+      if (byte === 10) return text.replace(/\r$/, '');
+      if (byte !== 13 && byte !== 9 && (byte < 32 || byte > 126)) fail('SSH_PROBE_INVALID');
+      text += String.fromCharCode(byte);
+    }
+    return fail('SSH_PROBE_HEADERS_TOO_LARGE');
+  };
+  const consumeBody = async (headers: string): Promise<void> => {
+    const lengths = [...headers.matchAll(/^content-length\s*:\s*([^\r\n]+)/gim)];
+    const encodings = [...headers.matchAll(/^transfer-encoding\s*:\s*([^\r\n]+)/gim)];
+    if (lengths.length > 1 || encodings.length > 1 || lengths.length && encodings.length) fail('SSH_PROBE_FRAMING_INVALID');
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const take = async (count: number) => {
+      if (!Number.isSafeInteger(count) || count < 0 || (size += count) > 65536) fail('SSH_PROBE_BODY_TOO_LARGE');
+      if (count) chunks.push(await read(count));
+    };
+    if (lengths.length) {
+      const value = lengths[0][1].trim();
+      if (!/^\d+$/.test(value)) fail('SSH_PROBE_FRAMING_INVALID');
+      await take(Number(value));
+    } else if (encodings.length) {
+      if (encodings[0][1].trim().toLowerCase() !== 'chunked') fail('SSH_PROBE_FRAMING_INVALID');
+      while (true) {
+        const value = (await line()).split(';')[0].trim();
+        if (!/^[a-f0-9]+$/i.test(value)) fail('SSH_PROBE_FRAMING_INVALID');
+        const count = Number.parseInt(value, 16);
+        if (!count) {
+          let trailerBytes = 0;
+          while (true) {
+            const trailer = await line();
+            if ((trailerBytes += trailer.length + 2) > 8192) fail('SSH_PROBE_HEADERS_TOO_LARGE');
+            if (!trailer) break;
+            if (!trailer.includes(':')) fail('SSH_PROBE_FRAMING_INVALID');
+          }
+          break;
+        }
+        await take(count);
+        if ((await read(2)).toString('latin1') !== '\r\n') fail('SSH_PROBE_FRAMING_INVALID');
+      }
+    }
+    const body = Buffer.concat(chunks).toString('latin1');
+    if (/<html/i.test(body) && /captive|portal|nointernet/i.test(body)) fail('SSH_PROBE_PORTAL');
+  };
+  const writeFrame = async (opcode: number, bytes: Buffer): Promise<void> => {
+    if (bytes.length > 125) fail('SSH_PROBE_WS_INVALID');
+    const mask = crypto.randomBytes(4), data = Buffer.from(bytes);
+    for (let index = 0; index < data.length; index++) data[index] ^= mask[index % 4];
+    await new Promise<void>((resolve, reject) => sock.write(
+      Buffer.concat([Buffer.from([0x80 | opcode, 0x80 | bytes.length]), mask, data]),
+      error => error ? reject(new Error('SSH_PROBE_CLOSED')) : resolve()));
+  };
+  const banner = (value: string): void => {
+    if (value.length > 253 || !/^SSH-(?:2\.0|1\.99)-[!-~][ -~]*$/.test(value)) fail('SSH_PROBE_INVALID');
+    steps.push({ event: 'SSH_BANNER_RECEIVED', ok: true, detail: value.slice(0, 48) });
+  };
+  try {
+    await writeSshPayload(sock, request, AbortSignal.timeout(Math.max(1, Math.ceil(deadline - performance.now()))));
+    while (true) {
+      let first: number;
+      try { first = await peek(accepted && !bannerSent ? Math.min(deadline, performance.now() + 2000) : deadline); }
+      catch (error) {
+        if (!accepted || bannerSent || performance.now() >= deadline ||
+          !(error instanceof Error) || error.message !== 'SSH_PROBE_TIMEOUT') throw error;
+        // Transport-only identification, never a username, password or authentication request.
+        const identification = Buffer.from('SSH-2.0-SXB_Transport_Probe\r\n');
+        websocket = advertisedWebsocket;
+        if (websocket) await writeFrame(2, identification);
+        else await new Promise<void>((resolve, reject) => sock.write(identification,
+          error => error ? reject(new Error('SSH_PROBE_CLOSED')) : resolve()));
+        bannerSent = true;
+        first = await peek();
+      }
+      if (websocket || accepted && wantsWebsocket && [1, 2, 129, 130, 136, 137, 138].includes(first)) {
+        websocket = true;
+        if (!bannerSent) {
+          await writeFrame(2, Buffer.from('SSH-2.0-SXB_Transport_Probe\r\n'));
+          bannerSent = true;
+        }
+        let prefix = '';
+        let fragmented = false;
+        for (let frame = 0; frame < 32; frame++) {
+          const header = await read(2), opcode = header[0] & 15, fin = (header[0] & 128) !== 0;
+          if (header[0] & 112) fail('SSH_PROBE_WS_INVALID');
+          let size = header[1] & 127;
+          if (size === 126) size = (await read(2)).readUInt16BE();
+          else if (size === 127) {
+            const wide = (await read(8)).readBigUInt64BE();
+            if (wide > 65536n) fail('SSH_PROBE_WS_INVALID');
+            size = Number(wide);
+          }
+          if (size > 65536 || opcode >= 8 && (!fin || size > 125)) fail('SSH_PROBE_WS_INVALID');
+          const mask = header[1] & 128 ? await read(4) : undefined;
+          const bytes = await read(size);
+          if (mask) for (let index = 0; index < bytes.length; index++) bytes[index] ^= mask[index % 4];
+          if (opcode === 8) fail('SSH_PROBE_CLOSED');
+          if (opcode === 9) { await writeFrame(10, bytes); continue; }
+          if (opcode === 10) continue;
+          if (![0, 1, 2].includes(opcode) || opcode === 0 && !fragmented || opcode !== 0 && fragmented) fail('SSH_PROBE_WS_INVALID');
+          fragmented = !fin;
+          prefix += bytes.toString('latin1');
+          if (prefix.length > 8192) fail('SSH_PROBE_HEADERS_TOO_LARGE');
+          while (prefix.includes('\n')) {
+            const end = prefix.indexOf('\n'), value = prefix.slice(0, end).replace(/\r$/, '');
+            prefix = prefix.slice(end + 1);
+            if (value.startsWith('SSH-')) { banner(value); return; }
+            if (++preambleLines > 32 || /[^\t\r -~]/.test(value) || value.trimStart().startsWith('<')) fail('SSH_PROBE_INVALID');
+          }
+        }
+        fail('SSH_PROBE_WS_INVALID');
+      }
+      if (first === 83 && (responses === 0 || accepted)) {
+        banner(await line(255));
+        return;
+      }
+      if (first !== 72) {
+        if (!accepted || first !== 9 && first !== 10 && first !== 13 && (first < 32 || first > 126)) {
+          fail(pendingRefusal ? 'SSH_PROBE_HTTP_REFUSED' : 'SSH_PROBE_INVALID');
+        }
+        const text = await line();
+        if (++preambleLines > 32 || (preambleBytes += text.length + 2) > 8192) fail('SSH_PROBE_HEADERS_TOO_LARGE');
+        if (text.trimStart().startsWith('<') || /captive|portal|nointernet/i.test(text)) fail('SSH_PROBE_PORTAL');
+        if (/^content-length:/i.test(text) && !/^\d+$/.test(text.slice(text.indexOf(':') + 1).trim())) fail('SSH_PROBE_FRAMING_INVALID');
+        continue;
+      }
+      const status = await line();
+      const match = /^HTTP\/\d(?:\.\d)?\s+(\d{3})(?:\s|$)/.exec(status);
+      if (!match && accepted && !status.startsWith('HTTP/')) {
+        if (++preambleLines > 32 || (preambleBytes += status.length + 2) > 8192) fail('SSH_PROBE_HEADERS_TOO_LARGE');
+        continue;
+      }
+      if (!match) fail('SSH_PROBE_INVALID');
+      if (++responses > 16) fail('SSH_PROBE_TOO_MANY_RESPONSES');
+      let headers = status + '\r\n';
+      while (true) {
+        const value = await line();
+        headers += value + '\r\n';
+        if (headers.length > 8192) fail('SSH_PROBE_HEADERS_TOO_LARGE');
+        if (!value) break;
+      }
+      const code = Number(match[1]);
+      if (code === 101 || code >= 200) answered++;
+      const intermediateRefusal = code === 403 && answered < Math.max(1, requests.length) &&
+        status.startsWith('HTTP/1.1 ') && !/^connection\s*:[^\r\n]*\bclose\b/im.test(headers) &&
+        /^(?:content-length|transfer-encoding)\s*:/im.test(headers);
+      accepted = code === 101 || code >= 200 && code < 300;
+      const redirect = [301, 302, 303, 307, 308].includes(code);
+      const rejected = !accepted && !(code >= 100 && code < 200) && !redirect;
+      steps.push({
+        event: code === 101 ? 'HTTP_STATUS_101' : accepted ? 'HTTP_STATUS_200' :
+          redirect ? 'HTTP_REDIRECT_INTERMEDIATE' : intermediateRefusal ? 'HTTP_METHOD_INTERMEDIATE' : 'HTTP_STATUS_UNEXPECTED',
+        ok: accepted || redirect || intermediateRefusal || code >= 100 && code < 200,
+        detail: `HTTP ${code}`,
+      });
+      if (rejected && !intermediateRefusal) fail('SSH_PROBE_HTTP_REFUSED');
+      if (/^location:[^\r\n]*(?:captive|portal|nointernet)/im.test(headers)) fail('SSH_PROBE_PORTAL');
+      await consumeBody(headers);
+      pendingRefusal = rejected;
+      advertisedWebsocket = code === 101 && wantsWebsocket && /^upgrade\s*:\s*websocket\s*$/im.test(headers) &&
+        /^connection\s*:[^\r\n]*\bupgrade\b/im.test(headers);
+    }
+  } catch (error) {
+    const code = error instanceof Error ? error.message : '';
+    if (!/^SSH_PROBE_[A-Z_]+$/.test(code) && !(error instanceof Error && error.name === 'TimeoutError')) throw error;
+    steps.push({ event: 'SSH_BANNER_MISSING', ok: false,
+      detail: /^SSH_PROBE_[A-Z_]+$/.test(code) ? code : 'SSH_PROBE_TIMEOUT' });
   }
 }
 
@@ -629,9 +819,10 @@ export async function probeConfig(
 
   // 4b. SSH+Payload : substitutions → envoi → 101/200 → flux SSH
   const payloadTpl = String(canonical.payload ?? 'GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]');
-  const payload = substitutePayload(payloadTpl, host, tlsServerName, port);
+  const payload = substitutePayload(payloadTpl, host, tlsServerName, port,
+    typeof canonical.userAgent === 'string' && canonical.userAgent.trim() ? canonical.userAgent.trim() : DEFAULT_SSH_USER_AGENT);
   try {
-    await probeWsTunnel(sock, payload, host, timeoutMs, steps);
+    await probeWsTunnel(sock, payload, timeoutMs, steps);
   } finally {
     try { sock.destroy(); } catch { /* ignore */ }
   }
@@ -639,7 +830,7 @@ export async function probeConfig(
   if (!okAll && payload.trimStart().toUpperCase().startsWith('CONNECT ')) {
     return finish(
       'unsupported',
-      'Payload CONNECT non prouvé par la sonde : l’application essaiera aussi TLS brut, TLS WebSocket puis WebSocket. Vérifiez sur l’appareil cible.',
+      'Payload CONNECT non prouvé depuis ce serveur. L’application conserve le transport déclaré, sans ajouter de TLS ; vérifiez sur le réseau de l’appareil.',
     );
   }
   return finish(okAll ? 'transport_ok' : 'unreachable_from_probe',

@@ -7,10 +7,40 @@ import {
   validateTransportCoherence,
   canonicalJson, encryptCanonical, decryptCanonical, engineConfigFromCanonical,
 } from "../services/canonical-config";
-import { substitutePayload } from "../services/transport-probe";
+import { substitutePayload, DEFAULT_SSH_USER_AGENT } from "../services/transport-probe";
 import { relayUpstream } from "../services/ssh-relay-transport";
 
 describe("imports et transports de la gamme SSH", () => {
+  it("préserve domaines, IPv4, IPv6 et User-Agent explicite du stockage chiffré au moteur direct", () => {
+    const previousKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = "synthetic-domain-parity-key";
+    try {
+      for (const host of ["ssh.example.test", "203.0.113.10", "2001:db8::10"]) {
+        const imported = { protocol: "ssh+payload", host, port: 80, tls: false,
+          username: "fixture", password: "synthetic-only", payload: "GET / HTTP/1.1[crlf]Host: [host][crlf]User-Agent:[ua][crlf][crlf]",
+          userAgent: "Synthetic-Agent/1" };
+        const parsed = parseImportedConfig(JSON.stringify(imported));
+        assert.equal(parsed.ok, true, parsed.errors.join(" | "));
+        const cipher = encryptCanonical(canonicalJson(parsed.canonical!));
+        const engine = engineConfigFromCanonical(JSON.parse(decryptCanonical(cipher)!));
+        assert.equal(engine.host, host);
+        assert.equal(engine.userAgent, imported.userAgent);
+        assert.equal(engine.payload, imported.payload);
+        assert.equal(engine.tls, false);
+      }
+      const native = readFileSync(new URL("../../app-mobile/modules/android-native/SxbVpnService.kt", import.meta.url), "utf8");
+      assert.ok(native.includes(`private const val SXB_SSH_USER_AGENT = "${DEFAULT_SSH_USER_AGENT}"`));
+      assert.doesNotMatch(DEFAULT_SSH_USER_AGENT, /SXB-VPN/);
+      assert.match(DEFAULT_SSH_USER_AGENT, /^Mozilla\/5\.0 .*Android/);
+      const invalid = validateTransportCoherence({ protocol: "ssh+payload", host: "ssh.example.test", port: 80,
+        username: "fixture", password: "synthetic-only", userAgent: "value\r\nInjected: value" });
+      assert.ok(invalid.errors.some(error => error.includes("userAgent")));
+    } finally {
+      if (previousKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = previousKey;
+    }
+  });
+
   it("transmet l'identité SSH et le payload déclaré jusqu'au relais privé après stockage chiffré", () => {
     const previousKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = "synthetic-ssh-fidelity-key";
@@ -294,9 +324,9 @@ describe("imports et transports de la gamme SSH", () => {
     );
     assert.match(probe, /const connectHost = explicitProxy \? String\(canonical\.proxyHost\)\.trim\(\) : host/);
     assert.match(probe, /tcpConnect\(connectHost, connectPort, timeoutMs\)/);
-    assert.match(probe, /substitutePayload\(payloadTpl, host, tlsServerName, port\)/);
+    assert.match(probe, /substitutePayload\(payloadTpl, host, tlsServerName, port,\s+typeof canonical\.userAgent/);
     assert.match(probe, /rejectUnauthorized: !insecure/);
     assert.match(probe, /canonical\.insecure === true/);
-    assert.match(probe, /Payload CONNECT non prouvé par la sonde/);
+    assert.match(probe, /Payload CONNECT non prouvé depuis ce serveur/);
   });
 });

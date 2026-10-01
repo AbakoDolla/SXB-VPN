@@ -50,9 +50,9 @@ export interface VpnProfile {
 // ── Préflight /api/config-test (mission §7) ───────────────────────────────────
 
 export interface ProbeStep {
-  step: string;
+  event: string;
   ok: boolean;
-  detail: string;
+  detail?: string;
   latencyMs?: number;
 }
 

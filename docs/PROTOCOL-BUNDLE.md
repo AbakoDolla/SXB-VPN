@@ -207,6 +207,26 @@ arrive only after the client's raw banner. The same monotonic deadline,
 unframed 403, a captive portal or an unknown post-upgrade byte remains a
 failure; HTTP 101 alone is not proof of SSH authentication or VPN traffic.
 
+An accepted raw tunnel may include printable pre-identification lines, such as
+a trailing `Content-Length` after a facade's 101, even when its cosmetic value
+does not describe the SSH stream. These are consumed before
+the SSH banner, bounded to 32 lines and 8 KiB within the existing HTTP budget.
+They cannot bypass a final HTTP error, a framed body or a captive portal.
+The banner and the first binary key-exchange bytes are left intact.
+
+Hostnames remain hostnames through import, encrypted storage, provisioning and
+Android dialing; DNS resolution never rewrites the profile to one fixed IP.
+The mobile client and dashboard probe now share an Android-browser default for
+`[ua]`. An explicitly imported `userAgent` takes precedence and can be entered
+in the dashboard SSH form; literal User-Agent headers in a payload are not
+rewritten. The dashboard consumes the complete HTTP chain and frames, including
+intermediate 301/403 responses and post-101 preambles, rather than treating its
+first response as the final result. It only declares transport compatibility
+after an actual SSH identification, never after an error body's `SSH-` text.
+The probe does not authenticate and an unconfirmed VPS result does not block
+import or mobile startup. Carrier filtering and provider account/session
+restrictions can still differ from the probe's network.
+
 Already-installed relay-only profiles contain no supplier credentials.
 They must be provisioned once while the control API is reachable, through
 automatic configuration refresh or an explicit refresh. A migration never

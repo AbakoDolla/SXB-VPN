@@ -126,6 +126,10 @@ private fun keylessUpgradeScenarios() {
         cosmetic + "HTTP/1.1 302 Redirect\r\nLocation: https://captive.example.test/\r\n\r\n" to "CAPTIVE_PORTAL",
         "HTTP/1.1 403 Forbidden\r\n\r\n" + cosmetic to "TUNNEL_REFUSED HTTP 403",
         reportedResponses() + "\u0090" to "TUNNEL_REFUSED",
+        reportedResponses() + "Content-Length: not-a-length\r\n" + banner to "HTTP_CHAIN_FRAMING_INVALID",
+        reportedResponses() + "\r\n".repeat(33) + banner to "SSH_PREAMBLE_TOO_LARGE",
+        reportedResponses() + "<html>fabricated banner\r\n" + banner to "CAPTIVE_PORTAL",
+        reportedResponses() + "p".repeat(8193) + "\r\n" + banner to "SSH_PREAMBLE_TOO_LARGE",
         ("HTTP/1.1 101 Switching Protocols\r\nContent-Length: 65536\r\n\r\n" + "b".repeat(65536)).repeat(3) + banner
             to "HTTP_CHAIN_TOO_LARGE",
     )) {
@@ -233,6 +237,11 @@ private fun protectFailureScenarios() {
 }
 
 fun main(args: Array<String>) {
+    check(sshUserAgent(JSONObject()) == SXB_SSH_USER_AGENT && SXB_SSH_USER_AGENT.startsWith("Mozilla/5.0 (Linux; Android"))
+    check(sshUserAgent(JSONObject().put("userAgent", "Synthetic-Agent/1")) == "Synthetic-Agent/1")
+    check(sshUserAgent(JSONObject().put("userAgent", "")) == SXB_SSH_USER_AGENT)
+    check(runCatching { sshUserAgent(JSONObject().put("userAgent", "one\r\nInjected: value")) }
+        .exceptionOrNull()?.message == "SSH_USER_AGENT_INVALID")
     val journal = LogHarness()
     repeat(40) { journal.log("[JSch:INF] evenement SSH") }
     journal.log("[SXB_TRACE] stage=SOCKET_CREATED timeout_ms=30000 tls=false")
@@ -271,6 +280,13 @@ fun main(args: Array<String>) {
     println("PASS: startup burst retains connection diagnostics and precise socket-protection failure")
     System.setProperty("sxb.test.store", args[0])
     val regressions = linkedMapOf<String, () -> Unit>(
+        "accepted HTTP101 trailing header preamble reaches the actual SSH banner" to {
+            val banner = "SSH-2.0-Synthetic\r\n\u0000\u0081"
+            payloadScenario(
+                reportedResponses() + "Content-Length: 104857600000\r\n\r\n\r\n" + banner,
+                true, false, payload = reportedPayload, expectedTunnel = banner,
+            )
+        },
         "reported GET/X/GET payload receives 301/403/101 then legacy WebSocket SSH" to {
             val banner = "SSH-2.0-Synthetic\r\n\u0000\u0081"
             payloadScenario(
@@ -313,6 +329,13 @@ fun main(args: Array<String>) {
         catch (error: Exception) { failed.add(name); System.err.println("FAIL: $name: ${error.message}") }
     }
     check(failed.isEmpty()) { "SSH transport regressions: ${failed.joinToString()}" }
+    System.getProperty("sxb.test.capture")?.let { file ->
+        val wire = File(file).readBytes().toString(Charsets.ISO_8859_1)
+        val banner = wire.indexOf("SSH-")
+        check(banner > 0)
+        payloadScenario(wire, true, false, payload = reportedPayload, expectedTunnel = wire.substring(banner))
+        println("PASS: credential-free actual provider capture reaches SSH unchanged through production Kotlin")
+    }
     keylessUpgradeScenarios()
     chainFramingScenarios()
     protectFailureScenarios()
@@ -397,7 +420,7 @@ private fun multiDeviceDirectScenario(peer: JSONObject) {
 
 private fun sshDataScenarios(peer: JSONObject) {
     val websocketModes = listOf("legacyWebsocketPayloadPort", "clientFirstWebsocketPayloadPort", "pingWebsocketPayloadPort")
-    for (mode in listOf("direct", "payloadPort", "delayedPayloadPort", "methodRefusalPayloadPort", "slowAuth") + websocketModes) {
+    for (mode in listOf("direct", "payloadPort", "delayedPayloadPort", "methodRefusalPayloadPort", "preamblePayloadPort", "slowAuth") + websocketModes) {
         val payloadMode = mode != "direct"
         val websocketMode = mode in websocketModes
         val events = Collections.synchronizedList(mutableListOf<String>())
@@ -410,12 +433,14 @@ private fun sshDataScenarios(peer: JSONObject) {
         session.setConfig("PreferredAuthentications", "password")
         session.setPassword(peer.getString("password"))
         if (payloadMode) session.setProxy(SxbPayloadProxy(
-            if (websocketMode || mode == "payloadPort" || mode == "methodRefusalPayloadPort") reportedPayload
+            if (websocketMode || mode == "payloadPort" || mode == "methodRefusalPayloadPort" || mode == "preamblePayloadPort") reportedPayload
             else "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
                 "X / HTTP/1.1[crlf]Host: [host][crlf][crlf]" +
                 "GET / HTTP/1.1[crlf]Host: gateway.example.test[crlf][crlf]",
-            false, "", "127.0.0.1", peer.getInt(if (mode == "slowAuth") "delayedPayloadPort" else mode), "ssh.example.test", 22,
-            "fixture-agent", false, { true }, onEvent = { events.add(it) },
+            false, "", if (mode == "preamblePayloadPort") "localhost" else "127.0.0.1",
+            peer.getInt(if (mode == "slowAuth") "delayedPayloadPort" else mode), "ssh.example.test", 22,
+            if (mode == "preamblePayloadPort") sshUserAgent(JSONObject()) else "fixture-agent",
+            false, { true }, onEvent = { events.add(it) },
         ))
         val started = System.nanoTime()
         connectCandidate(session, if (mode == "slowAuth") 20000 else 10000)

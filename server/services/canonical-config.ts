@@ -244,6 +244,10 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
       if (proto === 'ssh+payload' && cfg.payload !== undefined && typeof cfg.payload !== 'string') {
         errors.push('"payload" doit être une chaîne');
       }
+      if (cfg.userAgent !== undefined && (typeof cfg.userAgent !== 'string' ||
+        cfg.userAgent.length > 1024 || /[^\t\x20-\x7e]/.test(cfg.userAgent))) {
+        errors.push('"userAgent" doit être un en-tête ASCII sur une seule ligne (1024 caractères maximum)');
+      }
       if (cfg.sshTransport !== undefined && ![
         'direct', 'tls', 'payload', 'payload-tls', 'http-connect', 'slowdns',
       ].includes(sshTransport)) {

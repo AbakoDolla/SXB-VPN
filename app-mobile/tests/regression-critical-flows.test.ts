@@ -1139,7 +1139,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /if \(delayed\) Thread\.sleep\(1_000\)/);
     assert.match(nativeService, /sshSplitDirective\.findAll\(payload\)/);
     assert.match(nativeService, /sshRequestLine\.matches\(line\.trim\(\)\)/);
-    assert.match(nativeService, /cfg\.optStringOrNull\("userAgent", "SXB-VPN\/Android"\),\s+configuredSni/);
+    assert.match(nativeService, /sshUserAgent\(cfg\),\s+configuredSni/);
     assert.match(nativeService, /payload_token_invalid/);
   });
 
