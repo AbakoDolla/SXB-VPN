@@ -444,6 +444,7 @@
     "groupCount": "{{count}} forfait(s)",
     "groupContinued": "suite de la page précédente",
     "groupUnknownClient": "Client sans nom",
+    "visibleAllocationTotals": "Allocations affichées : {{allocated}} attribués · {{used}} consommés · {{remaining}} restants",
     "consumed": "{{value}} consommés",
     "percentUsed": "{{value}} du volume attribué",
     "edit": "Modifier le forfait",

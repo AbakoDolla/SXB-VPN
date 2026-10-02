@@ -444,6 +444,7 @@
     "groupCount": "{{count}} plan(s)",
     "groupContinued": "continued from previous page",
     "groupUnknownClient": "Unnamed client",
+    "visibleAllocationTotals": "Displayed allocations: {{allocated}} allocated · {{used}} used · {{remaining}} remaining",
     "consumed": "{{value}} used",
     "percentUsed": "{{value}} of assigned data",
     "edit": "Edit plan",

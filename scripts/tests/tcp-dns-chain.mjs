@@ -190,9 +190,21 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   const dataIngressPort = await freePort();
   const payload = Buffer.alloc(256 * 1024, 0x53);
   const payloadHash = createHash('sha256').update(payload).digest('hex');
+  const bulkPayload = Buffer.alloc(8 * 1024 * 1024, 0x6B);
+  const bulkHash = createHash('sha256').update(bulkPayload).digest('hex');
   const dataServer = net.createServer(socket => {
     keep(socket);
-    socket.once('data', () => socket.end(payload));
+    let request = '';
+    const readRequest = chunk => {
+      request += chunk.toString('ascii');
+      if (!['fixture-data', 'fixture-bulk'].some(marker => marker.startsWith(request))) {
+        socket.destroy(new Error('Invalid loopback fixture request'));
+      } else if (request === 'fixture-data' || request === 'fixture-bulk') {
+        socket.removeListener('data', readRequest);
+        socket.end(request === 'fixture-bulk' ? bulkPayload : payload);
+      }
+    };
+    socket.on('data', readRequest);
     socket.on('error', () => {});
   });
   servers.push(dataServer);
@@ -388,6 +400,23 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     assert.equal(data.length, payload.length);
     assert.equal(createHash('sha256').update(data).digest('hex'), payloadHash);
   }
+  const bulkStarted = process.hrtime.bigint();
+  for (let index = 0; index < 3; index++) {
+    const received = await new Promise((resolve, reject) => {
+      const socket = keep(net.connect(dataIngressPort, '127.0.0.1'));
+      let bytes = 0;
+      const digest = createHash('sha256');
+      socket.once('connect', () => socket.write('fixture-bulk'));
+      socket.setTimeout(15000, () => socket.destroy(new Error('Loopback VLESS bulk stream timeout')));
+      socket.on('data', chunk => { bytes += chunk.length; digest.update(chunk); });
+      socket.once('error', reject);
+      socket.once('end', () => resolve({ bytes, sha256: digest.digest('hex') }));
+    });
+    assert.equal(received.bytes, bulkPayload.length);
+    assert.equal(received.sha256, bulkHash);
+  }
+  const bulkElapsedMs = Number(process.hrtime.bigint() - bulkStarted) / 1e6;
+  console.log(`VLESS_BULK_LOOPBACK bytes=${3 * bulkPayload.length} elapsed_ms=${bulkElapsedMs.toFixed(2)} mib_per_second=${((3 * bulkPayload.length / 1048576) / (bulkElapsedMs / 1000)).toFixed(2)}; actual VLESS/WS/TLS/HTTP graph, not Android/carrier speed.`);
   assert.ok(tcpDnsQueries >= 5);
   assert.equal(udpDnsQueries, 0, 'The unreliable upstream UDP DNS path must not be attempted');
   assert.ok(connectRequests >= 1);

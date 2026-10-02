@@ -382,34 +382,75 @@ private fun readSshPayloadChain(
     }
 }
 
+private object SxbSshIoPolicy {
+    const val RELAY_BUFFER_BYTES = 32 * 1024
+    const val MAX_CHANNEL_INPUT_BUFFER_BYTES = 256 * 1024
+    const val FRAME_BUFFER_BYTES = 64 * 1024 + 14
+    const val MAX_DATA_FRAME_TRACES = 2
+
+    fun prepareTransport(socket: Socket) {
+        socket.tcpNoDelay = true
+    }
+
+    fun transportInput(socket: Socket): InputStream =
+        java.io.BufferedInputStream(socket.getInputStream(), RELAY_BUFFER_BYTES)
+
+    fun configureSession(session: Session) {
+        // JSch starts at 32 KiB and grows only when needed, up to this bound.
+        session.setConfig("max_input_buffer_size", MAX_CHANNEL_INPUT_BUFFER_BYTES.toString())
+    }
+}
+
 // ── WsOutputStream — Encode chaque write() en frame WebSocket binaire (client→server, masqué) ──
 private class WsOutputStream(
     private val raw: OutputStream,
     private val onEvent: (String) -> Unit = {},
 ) : OutputStream() {
     private val rng = SecureRandom()
+    private val mask = ByteArray(4)
+    private val frameBuffer = ByteArray(SxbSshIoPolicy.FRAME_BUFFER_BYTES)
+    private var tracedDataFrames = 0
 
     override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
     override fun write(b: ByteArray) = write(b, 0, b.size)
     override fun write(b: ByteArray, off: Int, len: Int) {
+        if (off < 0 || len < 0 || off > b.size - len) throw IndexOutOfBoundsException()
         if (len == 0) return
-        val mask = ByteArray(4).also { rng.nextBytes(it) }
-        val masked = ByteArray(len) { i -> (b[off + i].toInt() xor mask[i % 4].toInt()).toByte() }
-        // Diagnostic sans contenu : un payload ou une bannière peut contenir des secrets.
-        onEvent("[SXB_TRACE] stage=WS_FRAME_OUT fin=true opcode=2 masked=true payload_bytes=$len")
-        val buf = ByteArrayOutputStream(len + 14)
-        buf.write(0x82)                         // FIN=1, opcode=0x02 (binary)
-        when {
-            len < 126    -> { buf.write(0x80 or len) }
-            len < 65536  -> { buf.write(0x80 or 126); buf.write(len shr 8); buf.write(len and 0xFF) }
-            else         -> {
-                buf.write(0x80 or 127)
-                for (i in 7 downTo 0) buf.write((len.toLong() shr (i * 8)).toInt() and 0xFF)
+        var traceFrame = false
+        synchronized(raw) {
+            rng.nextBytes(mask)
+            val headerBytes = when {
+                len < 126 -> 2
+                len < 65536 -> 4
+                else -> 10
+            }
+            val frameBytes = Math.addExact(len, headerBytes + 4)
+            val frame = if (frameBytes <= frameBuffer.size) frameBuffer else ByteArray(frameBytes)
+            frame[0] = 0x82.toByte()
+            when (headerBytes) {
+                2 -> frame[1] = (0x80 or len).toByte()
+                4 -> {
+                    frame[1] = 0xFE.toByte()
+                    frame[2] = (len ushr 8).toByte()
+                    frame[3] = len.toByte()
+                }
+                else -> {
+                    frame[1] = 0xFF.toByte()
+                    for (i in 0 until 8) frame[2 + i] = (len.toLong() ushr ((7 - i) * 8)).toByte()
+                }
+            }
+            System.arraycopy(mask, 0, frame, headerBytes, mask.size)
+            val payloadStart = headerBytes + mask.size
+            for (i in 0 until len) frame[payloadStart + i] =
+                (b[off + i].toInt() xor mask[i and 3].toInt()).toByte()
+            raw.write(frame, 0, frameBytes)
+            raw.flush()
+            if (tracedDataFrames < SxbSshIoPolicy.MAX_DATA_FRAME_TRACES) {
+                tracedDataFrames++
+                traceFrame = true
             }
         }
-        buf.write(mask)
-        buf.write(masked)
-        synchronized(raw) { raw.write(buf.toByteArray()); raw.flush() }
+        if (traceFrame) onEvent("[SXB_TRACE] stage=WS_FRAME_OUT fin=true opcode=2 masked=true payload_bytes=$len")
     }
 
     override fun flush() = raw.flush()
@@ -424,6 +465,7 @@ private class WsInputStream(
 ) : InputStream() {
     private var pending = ByteArray(0)
     private var pendingPos = 0
+    private var tracedDataFrames = 0
 
     override fun read(): Int {
         val b = ByteArray(1)
@@ -468,7 +510,10 @@ private class WsInputStream(
                 if (opcode in 0x08..0x0A && (!fin || payloadLen > 125)) {
                     throw java.io.IOException("WS_PROTOCOL_ERROR control frame")
                 }
-                onEvent("[SXB_TRACE] stage=WS_FRAME_IN fin=$fin opcode=$opcode masked=$masked payload_bytes=$payloadLen")
+                val dataFrame = opcode == 0x00 || opcode == 0x01 || opcode == 0x02
+                val traceFrame = !dataFrame || tracedDataFrames < SxbSshIoPolicy.MAX_DATA_FRAME_TRACES
+                if (dataFrame && traceFrame) tracedDataFrames++
+                if (traceFrame) onEvent("[SXB_TRACE] stage=WS_FRAME_IN fin=$fin opcode=$opcode masked=$masked payload_bytes=$payloadLen")
                 val maskKey = if (masked) ByteArray(4) { readByte().toByte() } else null
                 val payload = ByteArray(payloadLen.toInt())
                 var total = 0
@@ -500,8 +545,10 @@ private class WsInputStream(
                     }
                     0x0A -> onEvent("[SXB_TRACE] stage=WS_PONG_RECEIVED payload_bytes=${payload.size}")
                     0x00, 0x01, 0x02 -> {
-                        onEvent("[SXB_DEBUG] WS_IN opcode=$opcode bytes=${payload.size}")
-                        SxbSecureLogger.debug("WS_FRAME_IN opcode=$opcode bytes=${payload.size}")
+                        if (traceFrame) {
+                            onEvent("[SXB_DEBUG] WS_IN opcode=$opcode bytes=${payload.size}")
+                            SxbSecureLogger.debug("WS_FRAME_IN opcode=$opcode bytes=${payload.size}")
+                        }
                         return payload
                     }
                     else -> throw java.io.IOException("WS_PROTOCOL_ERROR opcode")
@@ -567,6 +614,7 @@ private class SxbPayloadProxy(
         val connectTimeout = timeout.coerceIn(5_000, 30_000)
         val rawSocket = Socket()
         socket = rawSocket
+        SxbSshIoPolicy.prepareTransport(rawSocket)
         onEvent("[SXB_TRACE] stage=SOCKET_CREATED timeout_ms=$connectTimeout tls=$tlsEnabled sni_present=${sni.isNotBlank()}")
         // Socket() seul n'a pas forcément de descripteur natif. Créer le socket
         // local avant protect() est indispensable : sinon VpnService.protect()
@@ -612,7 +660,7 @@ private class SxbPayloadProxy(
         }
         socket = transportSocket
         val rawOut = transportSocket.getOutputStream()
-        val rawIn  = java.io.PushbackInputStream(transportSocket.getInputStream(), 1)
+        val rawIn  = java.io.PushbackInputStream(SxbSshIoPolicy.transportInput(transportSocket), 1)
 
         // ── 1. Substitutions dans le payload ─────────────────────────────────
         var payload = expandSshPayloadTokens(rawPayload, targetHost, targetPort, userAgent, sni)
@@ -825,6 +873,7 @@ private class SxbLoggingSocketFactory(
     override fun createSocket(host: String, port: Int): Socket {
         val rawSocket = Socket()
         try {
+            SxbSshIoPolicy.prepareTransport(rawSocket)
             return rawSocket.apply {
             // Garantit un FD exploitable par VpnService.protect() avant connect().
             // La liaison éphémère n'impose aucune adresse distante et évite qu'un
@@ -845,7 +894,7 @@ private class SxbLoggingSocketFactory(
     }
 
     override fun getInputStream(socket: Socket): InputStream =
-        SxbBannerInputStream(socket.getInputStream(), onBanner)
+        SxbBannerInputStream(SxbSshIoPolicy.transportInput(socket), onBanner)
 
     override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
 }
@@ -875,6 +924,7 @@ private class SxbTlsSocketFactory(
         val rawSocket = Socket()
         var ownedSocket: Socket = rawSocket
         try {
+        SxbSshIoPolicy.prepareTransport(rawSocket)
         // Même précaution qu'en SSH direct : protéger le socket AVANT connect(),
         // sinon il repasserait par le TUN qu'il est censé alimenter.
         val fdReady = runCatching {
@@ -925,7 +975,7 @@ private class SxbTlsSocketFactory(
     private fun isIpLiteral(value: String): Boolean =
         isIpLiteralHost(value)
 
-    override fun getInputStream(socket: Socket): InputStream = socket.getInputStream()
+    override fun getInputStream(socket: Socket): InputStream = SxbSshIoPolicy.transportInput(socket)
 
     override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
 }
@@ -2202,6 +2252,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         }
                     })
                     s.setConfig(commonProps)
+                    SxbSshIoPolicy.configureSession(s)
                     if (strategy != null) {
                         val strategyTlsServerName = sni.ifBlank {
                             when {
@@ -5438,7 +5489,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val threadB = Thread({
                 var receivedEof = false
                 try {
-                    val buf = ByteArray(8192); var n: Int
+                    val buf = ByteArray(SxbSshIoPolicy.RELAY_BUFFER_BYTES); var n: Int
                     while (!client.isClosed) {
                         n = chIn.read(buf)
                         if (n == -1) { receivedEof = true; break }
@@ -5458,7 +5509,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             downstream = threadB
 
             try {
-                val buf = ByteArray(8192); var n: Int
+                val buf = ByteArray(SxbSshIoPolicy.RELAY_BUFFER_BYTES); var n: Int
                 while (channel.isConnected && !client.isClosed) {
                     n = client.inputStream.read(buf); if (n == -1) break
                     chOut.write(buf, 0, n); chOut.flush()

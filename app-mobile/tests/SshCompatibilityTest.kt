@@ -9,6 +9,41 @@ private fun readHeaders(input: InputStream): String {
     return value.toString()
 }
 
+private fun frameThroughputContracts() {
+    for (length in listOf(1, 125, 126, 32768, 65535, 65536, 131072)) {
+        val original = ByteArray(length + 14) { ((it * 31) xor 0xA5).toByte() }
+        val encoded = ByteArrayOutputStream()
+        val events = mutableListOf<String>()
+        val output = WsOutputStream(encoded) { events.add(it) }
+        output.write(original, 7, length)
+        check(original.contentEquals(ByteArray(length + 14) { ((it * 31) xor 0xA5).toByte() }))
+        val frame = encoded.toByteArray()
+        check(frame[0] == 0x82.toByte() && (frame[1].toInt() and 0x80) != 0)
+        check(WsInputStream(ByteArrayInputStream(frame), ByteArrayOutputStream()).readBytes()
+            .contentEquals(original.copyOfRange(7, 7 + length))) { "Optimized framing changed masked bytes or offset" }
+        check(events.size == 1)
+        val size = encoded.size()
+        output.write(original, 0, 0)
+        check(encoded.size() == size)
+        check(runCatching { output.write(original, -1, 1) }.exceptionOrNull() is IndexOutOfBoundsException)
+        check(runCatching { output.write(original, original.size, 1) }.exceptionOrNull() is IndexOutOfBoundsException)
+    }
+    val encoded = ByteArrayOutputStream()
+    val events = Collections.synchronizedList(mutableListOf<String>())
+    val output = WsOutputStream(encoded) { events.add(it) }
+    val workers = (1..4).map { worker ->
+        Thread { repeat(128) { output.write(ByteArray(4096) { worker.toByte() }) } }.apply { start() }
+    }
+    workers.forEach { it.join(10000); check(!it.isAlive) }
+    val payload = WsInputStream(ByteArrayInputStream(encoded.toByteArray()), ByteArrayOutputStream()) { events.add(it) }.readBytes()
+    check(payload.size == 4 * 128 * 4096)
+    for (worker in 1..4) check(payload.count { it == worker.toByte() } == 128 * 4096)
+    for (offset in payload.indices step 4096) check((offset until offset + 4096).all { payload[it] == payload[offset] })
+    check(events.count { it.contains("stage=WS_FRAME_OUT") } == SxbSshIoPolicy.MAX_DATA_FRAME_TRACES)
+    check(events.count { it.contains("stage=WS_FRAME_IN") } == SxbSshIoPolicy.MAX_DATA_FRAME_TRACES)
+    println("PASS: byte-exact masked frames through 64-bit lengths, shared-buffer concurrent writes and bounded data traces")
+}
+
 private fun payloadScenario(
     response: String,
     http: Boolean,
@@ -61,7 +96,7 @@ private fun payloadScenario(
     val proxy = SxbPayloadProxy(
         payload, tls, serverName,
         "127.0.0.1", server.localPort, "ssh.example.test", 22, "synthetic-agent", false,
-        { socket -> check(!socket.isConnected); physicalSocket = socket; protected++; true },
+        { socket -> check(!socket.isConnected && socket.tcpNoDelay); physicalSocket = socket; protected++; true },
         expectHttpResponse = http, onEvent = { events.add(it) },
     )
     try {
@@ -238,6 +273,7 @@ private fun protectFailureScenarios() {
 }
 
 fun main(args: Array<String>) {
+    frameThroughputContracts()
     check(sshUserAgent(JSONObject()) == SXB_SSH_USER_AGENT && SXB_SSH_USER_AGENT.startsWith("Mozilla/5.0 (Linux; Android"))
     check(sshUserAgent(JSONObject().put("userAgent", "Synthetic-Agent/1")) == "Synthetic-Agent/1")
     check(sshUserAgent(JSONObject().put("userAgent", "")) == SXB_SSH_USER_AGENT)
