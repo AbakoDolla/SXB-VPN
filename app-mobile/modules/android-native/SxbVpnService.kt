@@ -2510,7 +2510,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // openTun() au démarrage du moteur. On lui fournit simplement une
             // config dont l'outbound est notre SOCKS5 local alimenté par SSH.
             val label = if (usePayload) "SSH+PAYLOAD" else "SSH"
-            startLibboxService(buildSshSocksRelayConfig(host, relaisUdp = udpMode == "udpgw"), label)
+            startLibboxService(buildSshSocksRelayConfig(host, relaisUdp = udpMode == "udpgw", dnsChoice = connectionDnsChoice(cfg)), label)
 
             // ── Boucle de surveillance ────────────────────────────────────────
             // C'est le seul détecteur du transport SSH : il ne passe pas par le
@@ -3667,7 +3667,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 put("endpoints", JSONArray().put(SxbProtocolCompatibility.canonicalWireguard(cfg)))
                 put("outbounds", JSONArray())
                 put("route", JSONObject().put("final", "proxy"))
-                put("dns", profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject())
+                put("dns", profileDnsObject(connectionDnsChoice(cfg)) ?: defaultDnsObject())
             })
         }
         // optStringOrNull : jamais la chaîne "null" (AOSP) — correctif APK #165
@@ -3762,7 +3762,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // Le domaine du serveur doit être résolu HORS tunnel, sinon sing-box
         // boucle : joindre le proxy exige sa résolution, qui exige le proxy.
         val dnsObj = applyDnsLoopGuard(
-            profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject(),
+            profileDnsObject(connectionDnsChoice(cfg)) ?: defaultDnsObject(),
             listOf(host),
         )
 
@@ -3943,6 +3943,41 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * `local`. Retourne null si la valeur est vide ou inexploitable, auquel cas
      * l'appelant conserve le DNS par défaut de l'application.
      */
+    private fun connectionDnsChoice(cfg: JSONObject): String {
+        return cfg.optStringOrNull("connectionDns", "").trim().ifEmpty {
+            cfg.optStringOrNull("dns", "").trim()
+        }
+    }
+
+    private fun applyConnectionDnsOverride(source: JSONObject, choice: String, detourTag: String): JSONObject {
+        if (choice.isBlank()) return source
+        val preset = profileDnsObject(choice) ?: throw IllegalArgumentException("CONNECTION_DNS_INVALID")
+        val resolver = JSONObject(preset.getJSONArray("servers").getJSONObject(0).toString())
+        if (resolver.optString("detour") == "proxy") resolver.put("detour", detourTag)
+        val result = JSONObject(source.toString())
+        val servers = result.optJSONArray("servers") ?: JSONArray().also { result.put("servers", it) }
+        val finalTag = result.optString("final")
+        val target = (0 until servers.length()).firstOrNull {
+            servers.optJSONObject(it)?.optString("tag") == finalTag &&
+                servers.optJSONObject(it)?.optString("type") != "fakeip" &&
+                servers.optJSONObject(it)?.optString("address") != "fakeip"
+        }
+        if (target != null) {
+            resolver.put("tag", finalTag)
+            servers.put(target, resolver)
+        } else {
+            var tag = "sxb-connection-dns"
+            var suffix = 0
+            while ((0 until servers.length()).any { servers.optJSONObject(it)?.optString("tag") == tag }) {
+                tag = "sxb-connection-dns-${++suffix}"
+            }
+            resolver.put("tag", tag)
+            servers.put(resolver)
+            result.put("final", tag)
+        }
+        return result
+    }
+
     private fun profileDnsObject(raw: String): JSONObject? {
         val value = raw.trim()
         if (value.isEmpty()) return null
@@ -4764,6 +4799,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun buildRawSingBoxConfig(rawCfg: JSONObject): String {
+        val selectedConnectionDns = rawCfg.optStringOrNull("connectionDns", "")
         val cfg = normalizeRawSingBoxCompatibility(convertXrayToSingBoxIfNeeded(JSONObject(rawCfg.toString())))
         val knownTypes = setOf(
             "vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria2",
@@ -4895,7 +4931,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val hasConfiguredDnsServers = configuredDns?.optJSONArray("servers")?.let { it.length() > 0 } == true
         // Le garde s'applique aussi au DNS venu du profil : un JSON fournisseur
         // qui route son DNS par le proxy produit exactement la même récursion.
-        val sourceDns = if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag)
+        val sourceDns = applyConnectionDnsOverride(
+            if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag),
+            selectedConnectionDns, finalTag,
+        )
         // Le DNS doit suivre la MÊME bascule que les données : sans cela un seul
         // amont mort suffit à casser toute résolution, exactement le symptôme
         // « dns: exchange failed … 404 » observé sur le terrain.
@@ -5269,7 +5308,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * Comme pour buildSingBoxConfig(), le champ « file_descriptor » a disparu :
      * c'est openTun() qui fournit le TUN au moteur.
      */
-    private fun buildSshSocksRelayConfig(host: String = "", relaisUdp: Boolean = false): String {
+    private fun buildSshSocksRelayConfig(host: String = "", relaisUdp: Boolean = false, dnsChoice: String = ""): String {
         val routeRules = JSONArray()
         routeRules
             .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
@@ -5282,6 +5321,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
             routeRules.put(JSONObject().put("network", "udp").put("port", JSONArray().put(443)).put("outbound", "block"))
         }
 
+        val requestedResolver = profileDnsObject(dnsChoice)?.optJSONArray("servers")?.optJSONObject(0)
+        if (!relaisUdp && requestedResolver?.optString("address")?.startsWith("udp://") == true) {
+            throw IllegalArgumentException("SSH_DNS_UDP_UNSUPPORTED")
+        }
         return JSONObject().apply {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", applyDnsLoopGuard(JSONObject().apply {
@@ -5296,14 +5339,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     // SSH retarderait la résolution du PREMIER nom de plusieurs
                     // allers-retours — pour un chiffrement que le tunnel assure
                     // déjà. Voir RESOLVEUR_TUNNEL.
-                    .put(JSONObject().put("tag", "dns-r").put("address", RESOLVEUR_TUNNEL).put("strategy", tunnelDnsStrategy())
+                    .put(JSONObject().put("tag", "dns-r")
+                        .put("address", requestedResolver?.optString("address") ?: RESOLVEUR_TUNNEL)
+                        .put("strategy", requestedResolver?.optString("strategy") ?: tunnelDnsStrategy())
                         // DÉTOUR EXPLICITE, indispensable depuis sing-box 1.12 :
                         // sans lui, un serveur DNS sort EN DIRECT (en 1.11 il
                         // prenait l'outbound par défaut, c'est-à-dire ce SOCKS).
                         // Sur un forfait qui ne décompte que le tunnel, le DNS
                         // des autres applications échouait : VPN « connecté »,
                         // compteurs qui bougent, et aucune donnée hors de l'app.
-                        .put("detour", "proxy"))
+                        .put("detour", requestedResolver?.optString("detour") ?: "proxy"))
                     .put(JSONObject().put("tag", "dns-l").put("address", bootstrapDnsAddress())
                         .put("strategy", dnsStrategy()).put("detour", "direct"))
                 )

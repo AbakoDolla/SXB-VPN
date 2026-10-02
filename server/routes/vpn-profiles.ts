@@ -22,6 +22,7 @@ import { prepareProfileEngineLock } from '../services/profile-engines';
 import { porteeProfils, porteeRevendeurs } from '../services/portee-donnees';
 import { extendedProfileExpiry, profileValidityDays } from '../services/profile-validity';
 import { parseEndpoint } from '../services/protocol-bundle';
+import { connectionDnsValue, ConnectionDnsError } from '../services/connection-dns';
 
 // Plafond large plutôt qu'une contrainte métier réelle : il évite une valeur
 // aberrante (NaN, négative, des millions de jours) de produire une date
@@ -565,6 +566,7 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
     const description = req.body?.description ? String(req.body.description).slice(0, 500) : null;
     const displayProtocol = req.body?.displayProtocol ? String(req.body.displayProtocol).slice(0, 100) : null;
     const offlineValidDays = clampOfflineValidDays(req.body?.offlineValidDays, 7);
+    const selectedDns = connectionDnsValue(req.body?.dns);
     const status = req.body?.status === 'inactive' ? 'inactive' : 'active';
     const validityDays = profileValidityDays(req.body?.validityDays);
     if (Number.isNaN(validityDays)) return res.status(400).json({ error: 'PROFILE_VALIDITY_INVALID', code: 'PROFILE_VALIDITY_INVALID' });
@@ -602,6 +604,7 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
           // à un administrateur son propre catalogue. Voir `porteeProfils`.
           createdBy: req.user?.userId ?? null,
           ...data,
+          ...(selectedDns !== undefined && { dns: selectedDns || null }),
           ...lock,
         },
         warnings: parseWarnings as string[],
@@ -628,6 +631,7 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
   } catch (err: any) {
     if (handleProfileLockError(err, res)) return;
     console.error('VPN profile batch import error:', err?.code || err?.name || 'UNKNOWN');
+    if (err instanceof ConnectionDnsError) return res.status(400).json({ error: err.message, code: err.code });
     return res.status(500).json({ error: 'Échec de l’import multiple' });
   }
 });
@@ -643,6 +647,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
       payloadId, offlineValidDays, status,
       method, jsonConfig, importConfig,
     } = req.body;
+    const selectedDns = connectionDnsValue(dns);
     const validityDays = profileValidityDays(req.body?.validityDays);
     if (Number.isNaN(validityDays)) return res.status(400).json({ error: 'PROFILE_VALIDITY_INVALID', code: 'PROFILE_VALIDITY_INVALID' });
     const expiresAt = validityDays ? extendedProfileExpiry(null, validityDays) : null;
@@ -733,6 +738,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
           status: status || 'active',
           expiresAt,
           ...data,
+          ...(selectedDns !== undefined && { dns: selectedDns || null }),
           ...lock,
         },
       });
@@ -765,7 +771,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         network: network || 'ws',
         tls: !!tls,
         sni: sni || null,
-        dns: dns || null,
+        dns: selectedDns || null,
         payloadId: payloadId || null,
         offlineValidDays: clampOfflineValidDays(offlineValidDays, 7),
         method: method || null,
@@ -780,6 +786,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
     return res.status(201).json({ success: true, profile: maskProfile(profile) });
   } catch (err: any) {
     if (handleProfileLockError(err, res)) return;
+    if (err instanceof ConnectionDnsError) return res.status(400).json({ error: err.message, code: err.code });
     // Collision d'identifiant technique DANS l'espace de l'auteur. Elle se
     // rendait en « 500 Failed to create VPN profile » : l'exploitant ne
     // pouvait ni comprendre ni corriger. Elle porte désormais son nom.
@@ -863,6 +870,8 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
       uuid, path, network, tls, sni, dns,
       payloadId, offlineValidDays, status, method, jsonConfig, importConfig,
     } = req.body;
+    const selectedDns = connectionDnsValue(dns);
+    const dnsChanged = selectedDns !== undefined && (selectedDns || '') !== (existing.dns || '');
 
     // ── Réimport explicite (seule voie de modification technique) ─────────────
     const rawImport = importConfig || (jsonConfig ? String(jsonConfig) : null);
@@ -885,7 +894,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
           ...(name !== undefined && { name }),
           ...(description !== undefined && { description }),
           ...(displayProtocol !== undefined && { displayProtocol: displayProtocol || null }),
-          ...(dns !== undefined && { dns }),
+          ...(selectedDns !== undefined && { dns: selectedDns || null }),
           ...(offlineValidDays !== undefined && { offlineValidDays: clampOfflineValidDays(offlineValidDays) }),
           ...(status !== undefined && { status }),
         },
@@ -915,7 +924,8 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
         ...(name !== undefined && { name }),
         ...(description !== undefined && { description }),
         ...(displayProtocol !== undefined && { displayProtocol: displayProtocol || null }),
-        ...(dns !== undefined && { dns }),
+        ...(selectedDns !== undefined && { dns: selectedDns || null }),
+        ...(dnsChanged && { configVersion: { increment: 1 } }),
         ...(offlineValidDays !== undefined && { offlineValidDays: clampOfflineValidDays(offlineValidDays) }),
         ...(status !== undefined && { status }),
       },
@@ -926,6 +936,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
   } catch (err: any) {
     if (handleProfileLockError(err, res)) return;
     if (err?.code === 'P2025') return res.status(423).json({ error: 'PROFILE_LOCKED', code: 'PROFILE_LOCKED' });
+    if (err instanceof ConnectionDnsError) return res.status(400).json({ error: err.message, code: err.code });
     return res.status(500).json({ error: 'Failed to update VPN profile' });
   }
 });

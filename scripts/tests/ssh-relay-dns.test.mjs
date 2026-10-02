@@ -29,9 +29,10 @@ const relais = service.slice(service.indexOf('private fun buildSshSocksRelayConf
 
 test('le résolveur du relais SSH sort explicitement par le tunnel', () => {
   assert.ok(relais.length > 200, 'générateur du relais introuvable');
-  assert.match(relais, /put\("tag", "dns-r"\)[\s\S]{0,700}?\.put\("detour", "proxy"\)\)/,
+  assert.match(relais, /put\("tag", "dns-r"\)[\s\S]{0,1200}?\.put\("detour", requestedResolver\?\.optString\("detour"\) \?: "proxy"\)\)/,
     'dns-r doit porter detour=proxy : sans lui, sing-box 1.12 résout en direct');
   // L'amorçage, lui, reste hors tunnel : il résout le serveur à joindre.
+  assert.match(relais, /val requestedResolver = profileDnsObject\(dnsChoice\)/);
   assert.match(relais, /put\("tag", "dns-l"\)[\s\S]{0,200}?put\("detour", "direct"\)/);
 });
 
@@ -44,7 +45,7 @@ test('la traduction garde le chemin hérité des serveurs DNS sans détour', () 
 });
 
 test('sans UDPGW, le relais refuse QUIC tout de suite au lieu de le laisser expirer', () => {
-  assert.match(service, /buildSshSocksRelayConfig\(host, relaisUdp = udpMode == "udpgw"\)/);
+  assert.match(service, /buildSshSocksRelayConfig\(host, relaisUdp = udpMode == "udpgw", dnsChoice = connectionDnsChoice\(cfg\)\)/);
   assert.match(relais, /if \(!relaisUdp\) \{\s*routeRules\.put\(JSONObject\(\)\.put\("network", "udp"\)\.put\("port", JSONArray\(\)\.put\(443\)\)\.put\("outbound", "block"\)\)/);
   assert.match(relais, /put\("type", "block"\)\.put\("tag", "block"\)/, 'la règle doit désigner un outbound qui existe');
 });

@@ -493,6 +493,27 @@ n'est modifie pour afficher une vitesse flatteuse. La capacite du serveur,
 les politiques operateur et les conditions du telephone restent exterieures
 a cette validation.
 
+Le dashboard propose un DNS principal par configuration : profil/automatique,
+Google `8.8.8.8`, Cloudflare `1.1.1.1`, reseau de l'appareil, ou adresse
+personnalisee. Le moteur utilisait deja `tcp://8.8.8.8` par defaut ; le
+selecteur n'est donc pas presente comme un moyen de supprimer un plafond de
+debit. Il rend le choix explicite et corrige son application effective.
+
+Le DNS administratif ne reecrit pas le canonique importe : une surcouche
+`connectionDns` voyage dans le blob GCM authentifie. Le DNS transport d'un
+profil SlowDNS reste disponible sous son champ fournisseur d'origine.
+Le changement modifie l'identite de cache et la version de configuration,
+donc le telephone peut reprovisionner sans reimporter les identifiants.
+Le reset vide restaure le DNS du profil. Les imports multiples appliquent
+le meme choix et les adresses invalides sont refusees sans ecriture.
+
+SSH emploie TCP pour les IP simples ; un DNS UDP explicite sans passerelle
+UDPGW produit une erreur, pas un acces annonce comme fonctionnel. Sur un
+JSON sing-box/Xray, seul le resolveur principal est remplace : les autres
+serveurs et regles DNS specifiques sont conserves et la nouvelle resolution
+emprunte le detour effectif. Les controles de verrouillage de profil restent
+exiges pour modifier ce choix.
+
 ## E. API
 
 | Surface | Contrat |

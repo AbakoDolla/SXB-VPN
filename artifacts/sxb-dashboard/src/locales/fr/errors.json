@@ -1,4 +1,5 @@
 {
+  "profile_dns_invalid": "DNS invalide. Utilisez une IP, un nom de résolveur ou une adresse tcp://, tls:// ou https:// valide.",
   "shared_allocation_account": "Ce compte porte des allocations d’autres propriétaires. Modifiez uniquement vos propres forfaits ou contactez l’administration.",
   "free_trial": {
     "update_failed": "Forfait non modifié — voir le journal du serveur.",
