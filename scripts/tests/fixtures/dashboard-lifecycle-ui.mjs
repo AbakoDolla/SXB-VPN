@@ -216,6 +216,7 @@ export function fixture(view = "DevicesView", options = {}) {
       clearTimeout: id => timers.delete(id),
       require(specifier) {
         if (specifier === "react") return hooks;
+        if (specifier === "react-dom") return { createPortal: child => child };
         if (specifier === "react/jsx-runtime") return { jsx, jsxs: jsx, Fragment: "fragment" };
         if (specifier === "lucide-react") return new Proxy({}, { get: (_, name) => String(name) });
         if (specifier === "sonner") return { toast: new Proxy({}, { get: (_, kind) => value => toasts.push({ kind, value }) }) };
