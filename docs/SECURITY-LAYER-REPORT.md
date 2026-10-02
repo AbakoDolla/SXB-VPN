@@ -314,7 +314,8 @@ et le restart. La generation automatique postinstall est desactivee.
 
 L'ordre est : `backend-rollout-compat.sql`, `migrations_manual.sql`, scopes
 device puis profil, propriete/validite revendeur, permission tokens.revoke,
-vouchers, verrouillage des profils, ledger append-only, `security-layer.sql`.
+vouchers, verrouillage des profils, ledger append-only, `security-layer.sql`,
+`20261002043000_data_allocation_ownership/migration.sql`.
 Chaque fichier est transactionnel : sa propre transaction lorsqu'il en declare
 une, sinon `psql --single-transaction`, toujours avec ON_ERROR_STOP=1 et sans
 chargement de psqlrc. Il ne s'agit pas d'une transaction globale de tous les
@@ -410,6 +411,56 @@ nonces et refresh ordinaires restent des deltas transitoires couverts par
 le verrou. Les anciens recus ne sont pas reecrits : les deux compteurs absents
 restent absents et s'affichent « Non mesure / Not measured », jamais comme zero.
 Un nouvel apercu exige les 26 compteurs et refuse une reponse incomplete.
+
+### Isolation financiere des allocations
+
+Chaque `Subscription` reste l'allocation et l'autorite de son quota : elle
+enregistre des instantanes `allocationUserId`, `allocationOwnerId`,
+`allocationOwnerName`, `allocationResellerId`, `allocationType` (`sold` ou
+`free_trial`) et `allocationOrigin`. Les octets attribues, consommes et restants,
+la date de creation et la configuration sont exposes depuis cette meme ligne.
+Un trigger PostgreSQL interdit la reecriture du proprietaire, de l'utilisateur,
+du type ou du compte porteur apres attribution. Un changement de gestionnaire
+du compte ne deplace donc pas les ventes.
+
+Un revendeur peut vendre a un compte deja active avec son code `SXB-USER`,
+depuis **Forfaits Data > Compte existant, avec son code**. Cette operation cree
+son allocation, debite seulement son enveloppe et ne change ni le compte
+porteur, ni sa cle d'activation. Elle ne donne aucun annuaire des clients
+d'autrui et ne lui renvoie pas leurs codes d'activation ou leurs autres plans.
+Ne pas creer un deuxieme compte pour cumuler des ventes : le code identifie le
+compte authentifie existant, sans fusionner des identites appareil distinctes.
+
+Les scopes, compteurs, graphiques, historique commercial et mutations de
+forfaits suivent leur proprietaire financier, pas `VpnClient.resellerId`.
+Les essais et leurs recharges restent finances par le systeme, y compris
+apres une conversion administrative de leur demande. Une nouvelle vente est
+une allocation distincte, jamais une reecriture du financement d'un essai.
+Un revendeur ne peut pas suspendre, supprimer ou faire tourner le code global
+d'un compte partage et ainsi retirer les allocations d'autrui : il gere ses
+propres forfaits, les actions globales restant a l'administration.
+
+Le mobile presente la somme des allocations applicables, avec ventes et
+essais separes. Le moteur et le ledger debitent toujours le `subscriptionId`
+effectivement selectionne : le total informatif n'est pas un quota global
+autorise a consommer le forfait d'un autre vendeur. Expiration, etat,
+configuration et liaison appareil restent applicables. Un vendeur expire
+bloque ses allocations, pas les allocations independantes des autres vendeurs
+ou du systeme ; les revocations du compte/appareil lui-meme restent globales.
+
+La migration est additive et repetable. Les essais historiques sont retrouves
+par leur demande ou leur historique de creation ; le vendeur historique est
+fige depuis le createur revendeur lorsqu'il existait deja a la creation.
+Sinon `legacy_account_snapshot` designe explicitement l'instantane de
+facturation anterieur a la migration, pas une reconstruction certaine du
+vendeur original. Aucune vente ni consommation anterieure n'est inventee.
+Apres sauvegarde, SQL et generation des deux clients Prisma, le deploiement
+execute `scripts/reconcile-allocation-ledger.cjs`. Les reservations stockees
+sont recalculees par proprietaire sous transaction serializable et verrou,
+avec un mouvement de correction immuable ; les plafonds attribues ne changent
+pas. La reexecution ne cree aucun ajustement lorsque le compteur est deja juste.
+Le gate readonly exige aussi le trigger et la contrainte d'identite
+d'allocation. Un echec de migration ou de reconciliation bloque la publication.
 
 ## E. API
 

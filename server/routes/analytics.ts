@@ -7,9 +7,11 @@ import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { FURTIVITE_OWNER_PORTEUR, isOwnerRequest } from "../middleware/rbac/owner";
-import { porteeBons, porteeClients, porteeComptes as porteeAnnuaireComptes, porteeRevendeurs, porteeServeurs, porteeSousClient } from "../services/portee-donnees";
+import { porteeBons, porteeClients, porteeClientsAllocations, porteeComptes as porteeAnnuaireComptes, porteeRevendeurs, porteeServeurs, porteeSousClient } from "../services/portee-donnees";
 import { etFiltres } from "../services/free-trial-marks";
 import { agregerTrafic, enGo, tauxUtilisation } from "../services/trafic-agrege";
+import { resellerClientAllocationView } from "../services/data-allocation";
+import { chargerFicheRevendeur } from "../services/reseller-access";
 
 const router = Router();
 
@@ -123,12 +125,15 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
     // Règle d'agrégation en un point unique : elle vivait en deux exemplaires
     // (base de données / repli mémoire) et le défaut était dans les deux.
     const requesterIsOwner = isOwnerRequest(req);
-    const clientStealthWhere = await porteeAnalytique(req);
+    const clientStealthWhere = (await porteeClientsAllocations(prisma, req.user)) ?? undefined;
     if (prisma) {
-      const clients = await prisma.vpnClient.findMany({
-        select: { quotaTotal: true, quotaUsed: true, updatedAt: true },
+      const merchant = req.user?.role === "RESELLER" ? await chargerFicheRevendeur(prisma, req.user.userId) : null;
+      const loaded = await prisma.vpnClient.findMany({
+        select: { userId: true, resellerId: true, status: true, expireAt: true, quotaTotal: true, quotaUsed: true, updatedAt: true,
+          subscriptions: req.user?.role === "RESELLER" },
         ...(clientStealthWhere ? { where: clientStealthWhere } : {}),
       });
+      const clients = loaded.map(client => resellerClientAllocationView(client, merchant));
       const agrege = agregerTrafic(clients);
 
       // Historique réel : regrouper quotaUsed par jour de mise à jour (7 derniers jours)

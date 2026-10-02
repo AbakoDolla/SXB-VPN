@@ -2920,7 +2920,9 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(revendeurs, /router\.delete\(\s*["']\/:id["'][\s\S]{0,180}requirePermission\(["']reseller\.manage["']\)/);
 
     // Le cumul doit couvrir les deux formes d'allocation, sans double compte.
-    assert.match(quota, /if \(tousLesForfaits\.length > 0\)/);
+    assert.match(quota, /where: dataAllocationScope\(merchant\)/);
+    assert.match(quota, /ownsDataAllocation\(sub, merchant\)/);
+    assert.match(quota, /if \(ownSubscriptions\.length === 0\)/);
     assert.match(quota, /alloue \+= BigInt\(client\.quotaTotal \?\? 0\)/);
     assert.match(revendeurs, /calculerAllocation\(prisma, r\)/);
 

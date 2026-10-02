@@ -16,6 +16,7 @@ import { Router, Response } from 'express';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { prisma }           from '../database';
+import { dataAllocationQuotaOwner } from '../services/data-allocation';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity }    from '../database';
 import { refusAccesProprietaireClient } from '../services/reseller-access';
@@ -67,10 +68,16 @@ async function refusProvision(req: AuthenticatedRequest, sub: any, db: PrismaCli
   if (deviceStatus !== 'active') {
     return { status: 403, body: { ...deviceAccessFailure(deviceStatus), error: 'Compte client suspendu ou révoqué' } };
   }
-  const ownerError = await refusAccesProprietaireClient(db, sub.client);
+  const ownerError = await refusAccesProprietaireClient(db,
+    sub.allocationType != null ? {
+      resellerId: dataAllocationQuotaOwner(sub).resellerId,
+      userId: dataAllocationQuotaOwner(sub).resellerUserId,
+    } : sub.client);
   if (ownerError) {
     return { status: ownerError.status, body: {
-      ...ownerError.body, ...deviceAccessFailure(ownerError.body.code === 'RESELLER_EXPIRED' ? 'expired' : 'suspended'),
+      ...(sub.allocationType == null ? ownerError.body : {}), ...(sub.allocationType == null
+        ? deviceAccessFailure(ownerError.body.code === 'RESELLER_EXPIRED' ? 'expired' : 'suspended')
+        : subscriptionAccessFailure(ownerError.body.code === 'RESELLER_EXPIRED' ? 'expired' : 'suspended', sub.id)),
       legacyCode: ownerError.body.code,
     } };
   }

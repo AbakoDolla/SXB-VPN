@@ -164,5 +164,6 @@ jobs:
           PREPARE
           node backend/node_modules/prisma/build/index.js db push --skip-generate --schema "$SXB_SECURITY_SCHEMA"
           node backend/node_modules/prisma/build/index.js db execute --schema "$SXB_SECURITY_SCHEMA" --file prisma/security-layer.sql
+          node backend/node_modules/prisma/build/index.js db execute --schema "$SXB_SECURITY_SCHEMA" --file prisma/migrations/20261002043000_data_allocation_ownership/migration.sql
           node backend/node_modules/prisma/build/index.js generate --schema "$SXB_SECURITY_SCHEMA"
           node scripts/tests/security-layer-postgres.integration.mjs

@@ -165,6 +165,7 @@ function fixture() {
     cache.set(file, module);
     const localRequire = specifier => {
       if (specifier === "react") return hooks;
+      if (specifier === "react-dom") return { createPortal: child => child };
       if (specifier === "sonner") return { toast: new Proxy({}, { get: (_, kind) => value => toasts.push({ kind, value }) }) };
       if (specifier === "lucide-react") return new Proxy({}, { get: () => () => null });
       if (!specifier.startsWith(".")) return dashboardRequire(specifier);
@@ -239,7 +240,7 @@ for (const [name, title, create] of [
   tree = f.render(name);
   const form = nodes(tree).filter(node => node.type === "form").at(-1);
   assert.ok(form, `${name}: opened form`);
-  const editable = nodes(form.children).find(node => node.type === "input" && node.props.onChange && !["checkbox", "date", "datetime-local"].includes(node.props.type));
+  const editable = nodes(form.children).find(node => node.type === "input" && node.props.onChange && !["checkbox", "radio", "date", "datetime-local"].includes(node.props.type));
   assert.ok(editable, `${name}: editable field`);
   const entered = editable.props.type === "number" ? "73" : "Saisie utilisateur conservée";
   editable.props.onChange({ target: { value: entered } });

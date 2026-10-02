@@ -5,6 +5,7 @@ import { consumeSessionProof, type BoundClaims } from './mobile-session-security
 import { proofFor, securityFailure } from './mobile-proof';
 import { MobileAccessError, subscriptionAccessFailure, subscriptionAccessStatus } from './access-lifecycle';
 import { authorizeRelayBinding } from './ssh-relay-auth';
+import { withAllocationAccess } from './data-allocation';
 
 export const MOBILE_TUNNEL_BOOTSTRAP_VERSION = 1;
 export const MOBILE_DIRECT_SSH_VERSION = 1;
@@ -43,7 +44,8 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
       });
       if (!subscription ||
           (subscription.deviceId && subscription.deviceId !== claims.deviceId)) securityFailure('OWNERSHIP_FORBIDDEN', 403);
-      const status = subscriptionAccessStatus(subscription);
+      const [allocation] = await withAllocationAccess(tx, [subscription]);
+      const status = subscriptionAccessStatus(allocation);
       if (input.action === 'connect' && status !== 'active') {
         throw new MobileAccessError(403, subscriptionAccessFailure(status, subscription.id));
       }

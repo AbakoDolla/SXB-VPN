@@ -5,6 +5,7 @@ import path from "node:path";
 import { createPostgresResetBackup, postgresEnvironment, type ResetBackup } from "./reset-backup";
 
 export const BACKEND_SCHEMA = "backend/prisma/schema.prisma";
+const ALLOCATION_MIRROR = "prisma/migrations/20261002043000_data_allocation_ownership/migration.sql";
 export const BACKEND_MIGRATIONS = [
   { file: "backend/prisma/backend-rollout-compat.sql", transaction: "file" },
   { file: "backend/prisma/migrations_manual.sql", transaction: "command" },
@@ -16,6 +17,7 @@ export const BACKEND_MIGRATIONS = [
   { file: "backend/prisma/migrations/20260908220000_profile_password_lock/migration.sql", transaction: "command" },
   { file: "backend/prisma/migrations/20260907050730_reseller_quota_ledger/migration.sql", transaction: "command" },
   { file: "backend/prisma/security-layer.sql", transaction: "file" },
+  { file: "backend/prisma/migrations/20261002043000_data_allocation_ownership/migration.sql", transaction: "file" },
 ] as const;
 
 export class BackendMigrationError extends Error {
@@ -91,17 +93,19 @@ async function command(
 
 async function files(options: BackendMigrationOptions): Promise<void> {
   try {
-    for (const file of [BACKEND_SCHEMA, "prisma/schema.prisma", ...BACKEND_MIGRATIONS.map(item => item.file)]) {
+    for (const file of [BACKEND_SCHEMA, "prisma/schema.prisma", ALLOCATION_MIRROR, ...BACKEND_MIGRATIONS.map(item => item.file)]) {
       const info = await lstat(path.join(options.root, file));
       if (!info.isFile() || info.isSymbolicLink()) throw new Error("Missing deployment input");
     }
-    const [schema, mirror, security, securityMirror] = await Promise.all([
+    const [schema, mirror, security, securityMirror, allocation, allocationMirror] = await Promise.all([
       readFile(path.join(options.root, BACKEND_SCHEMA), "utf8"),
       readFile(path.join(options.root, "prisma/schema.prisma"), "utf8"),
       readFile(path.join(options.root, "backend/prisma/security-layer.sql"), "utf8"),
       readFile(path.join(options.root, "prisma/security-layer.sql"), "utf8"),
+      readFile(path.join(options.root, "backend", ALLOCATION_MIRROR), "utf8"),
+      readFile(path.join(options.root, ALLOCATION_MIRROR), "utf8"),
     ]);
-    if (schema !== mirror || security !== securityMirror) throw new Error("Mirror drift");
+    if (schema !== mirror || security !== securityMirror || allocation !== allocationMirror) throw new Error("Mirror drift");
     const datasource = schema.match(/^datasource db\s*\{([^}]*)\}/m)?.[1].trim();
     if (!datasource || !/^provider\s*=\s*"postgresql"\s+url\s*=\s*env\("DATABASE_URL"\)$/.test(datasource) ||
         [...schema.matchAll(/^datasource\s/gm)].length !== 1) throw new Error("Different database target");
@@ -130,10 +134,18 @@ export async function checkBackendSchema(options: BackendMigrationOptions): Prom
     `SELECT (SELECT count(*) FROM pg_trigger WHERE tgname='reseller_quota_movements_append_only'
       AND tgrelid='public.reseller_quota_movements'::regclass AND NOT tgisinternal AND tgenabled='O'),
       (SELECT count(*) FROM pg_constraint WHERE conname='reseller_quota_movements_kind_check'
-      AND conrelid='public.reseller_quota_movements'::regclass AND convalidated);`,
+      AND conrelid='public.reseller_quota_movements'::regclass AND convalidated),
+      (SELECT count(*) FROM pg_trigger WHERE tgname='subscription_allocation_identity_immutable'
+      AND tgrelid='public.subscriptions'::regclass AND NOT tgisinternal AND tgenabled='O'),
+      (SELECT count(*) FROM pg_constraint WHERE conname='subscriptions_allocation_identity_check'
+      AND conrelid='public.subscriptions'::regclass AND convalidated);`,
   ], { ...env, PGOPTIONS: `${env.PGOPTIONS} -c default_transaction_read_only=on` }, "ledger-check", true);
-  if (protections.code !== 0 || protections.output.trim() !== "1|1") {
+  const fields = protections.output.trim().split('|');
+  if (protections.code !== 0 || fields.slice(0, 2).join('|') !== "1|1") {
     throw new BackendMigrationError("BACKEND_LEDGER_PROTECTION_MISSING", "ledger-check");
+  }
+  if (fields.slice(2).join('|') !== "1|1") {
+    throw new BackendMigrationError("BACKEND_ALLOCATION_PROTECTION_MISSING", "ledger-check");
   }
 }
 

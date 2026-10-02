@@ -43,7 +43,7 @@ async function rollout(db, options) {
   const next = {
     id: current?.id || randomUUID(), versionCode: options.build.versionCode, versionName: options.build.versionName,
     apkUrl: APK_URL, apkSha256: options.build.apkSha256,
-    notes: 'SSH : lecteur commun CONNECT/GET/payloads empilés, imports JSON/SSH Custom et URI SSH, TLS déclaré conservé. Remplacement par un autre VPN : arrêt natif et état déconnecté publiés sans attendre le nettoyage ; anciennes réponses ignorées. Contrôle root, quotas et SSH direct conservés.',
+    notes: 'Données : chaque vente et essai gratuit conserve son propriétaire et ses compteurs. Les achats auprès de plusieurs revendeurs se cumulent sur le même compte sans mélanger leurs enveloppes ; le total disponible et l’origine de chaque forfait sont affichés. Chaque connexion consomme uniquement son propre forfait. SSH direct, TLS déclaré, contrôle root et arrêt lors du remplacement par un autre VPN conservés. Installer par-dessus sans effacer les données.',
     minSupportedCode: 0, forceUpdate: false, active: true,
     targetRoles: current?.targetRoles ?? ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
     targetDeviceIds: [], publishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),

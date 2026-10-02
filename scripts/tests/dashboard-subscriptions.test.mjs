@@ -47,6 +47,19 @@ beforeEach(() => {
   state.response = { success: true, subscription: { id: "created-plan", name: "Profil — 3j" } };
 });
 
+test("a second seller submits only the supplied account code, without claiming account ownership", async () => {
+  await createSubscription({
+    recipientToken: 'SXB-USER-SYNTHETIC-BUYER-CODE', profileId: 'profile',
+    quotaGB: 20, durationDays: 30,
+  });
+  const sent = JSON.parse(state.calls[0].body);
+  assert.equal(sent.recipientToken, 'SXB-USER-SYNTHETIC-BUYER-CODE');
+  assert.equal(sent.clientId, undefined);
+  assert.equal(sent.resellerId, undefined);
+  assert.equal(sent.allocationType, undefined);
+  assert.equal(sent.quotaGB, 20);
+});
+
 for (const name of [undefined, "", "   ", "  Nom choisi  "]) {
   test(`the dashboard submits the optional name correctly: ${JSON.stringify(name)}`, async () => {
     const result = await createSubscription({

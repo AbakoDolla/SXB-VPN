@@ -19,8 +19,8 @@ export interface Subscription {
   updatedAt: string;
   client?: {
     id: string;
-    token: string;
-    user?: { name: string; email: string };
+    token?: string;
+    user?: { name: string | null; email?: string | null };
     resellerId?: string | null;
     reseller?: { id: string; name: string | null; email: string | null } | null;
   };
@@ -28,6 +28,22 @@ export interface Subscription {
   /** Propriété commerciale, remontée au niveau du forfait pour les rôles supérieurs. */
   resellerId?: string | null;
   resellerName?: string | null;
+  quotaRemaining?: string | null;
+  allocation?: {
+    id: string;
+    userId: string;
+    ownerId: string | null;
+    ownerName: string | null;
+    resellerId: string | null;
+    type: 'sold' | 'free_trial';
+    allocatedBytes: string;
+    usedBytes: string;
+    remainingBytes: string | null;
+    createdAt: string;
+    profileId: string;
+    configurationName: string | null;
+    origin: string;
+  };
 }
 
 export interface SubStats { total: number; active: number; expired: number }
@@ -60,7 +76,8 @@ export async function fetchSubStats(): Promise<SubStats> {
  * une configuration attribuée, un volume et une durée.
  */
 export async function createSubscription(payload: {
-  clientId: string;
+  clientId?: string;
+  recipientToken?: string;
   profileId: string;
   name?: string;
   quotaGB: number;

@@ -215,15 +215,15 @@ describe('accueil mobile — période d’essai', () => {
         `${fichier} : l’essai serait déduit du nom du forfait`);
     }
 
-    // Côté serveur, le marqueur est la demande d'essai DÉPLOYÉE qui porte le
-    // forfait — exactement celui du tableau de bord, sans second mécanisme.
+    // L'origine financiere immuable reste celle de l'essai, meme apres
+    // conversion ; le marqueur de demande preserve aussi les anciennes lignes.
     const marques = lire('server/services/free-trial-marks.ts');
     assert.match(marques, /export async function forfaitsEssaiDuClient/);
     assert.match(marques, /where: \{ clientId, status: STATUT_DEMANDE\.DEPLOYED \}/);
     assert.match(marques, /select: \{ subscriptionId: true \}/);
     const route = lire('server/routes/mobile.ts');
     assert.match(route, /const forfaitsEssai = await forfaitsEssaiDuClient\(prisma, String\(client\.id\)\)/);
-    assert.match(route, /isFreeTrial:\s+forfaitsEssai\.has\(String\(sub\.id\)\)/);
+    assert.match(route, /isFreeTrial:\s+dataAllocationType\(sub\) === 'free_trial' \|\| forfaitsEssai\.has\(String\(sub\.id\)\)/);
     assert.doesNotMatch(route, /isFreeTrial:.*sub\.name/);
   });
 
@@ -281,7 +281,7 @@ describe('accueil mobile — période d’essai', () => {
     // doit pas interroger le serveur davantage parce qu'on l'a ouvert. Un appel
     // déclenché par un geste explicite — le compteur de personnes en ligne — ne
     // relève pas de cette règle : il ne part que si l'utilisateur le demande.
-    const appels = accueil.match(/apiClient\.get\(/g) || [];
+    const appels = accueil.match(/apiClient\.get(?:<[^>]+>)?\(/g) || [];
     const surDemande = accueil.match(/apiClient\.get\('\/mobile\/online'\)/g) || [];
     assert.equal(appels.length - surDemande.length, 3);
     assert.ok(

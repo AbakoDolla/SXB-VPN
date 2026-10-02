@@ -302,7 +302,7 @@ process.env.DATABASE_URL = "";
 const temporary = await mkdtemp(path.join(root, "backend", ".sxb-http-"));
 const bundlePath = path.join(temporary, "routes.cjs");
 const routeNames = ["devices", "clients", "subscriptions", "tokens", "vouchers", "mobile", "resellers", "users", "rbac", "auth", "sessions", "dashboard", "provision",
-  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register", "free-trial", "data-additions", "security", "audit-logs", "support"];
+  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register", "free-trial", "data-additions", "security", "audit-logs", "support", "analytics"];
 const routeKey = name => name.replaceAll("-", "_");
 await build({
   stdin: {
@@ -311,7 +311,8 @@ await build({
       '\nexport * from "./server/services/mobile-access-state";\nexport * from "./server/services/access-ticket";' +
       '\nexport { parseImportedConfig, canonicalJson, encryptCanonical, computeCanonicalHash } from "./server/services/canonical-config";' +
       '\nexport { createApiRateLimiter } from "./server/middleware/rate-limit";' +
-      '\nexport { issueSecurityUnlock } from "./server/services/security-gate";',
+      '\nexport { issueSecurityUnlock } from "./server/services/security-gate";' +
+      '\nexport { reconcilierAllocationsRevendeurs } from "./server/services/reseller-quota";',
     resolveDir: root,
     loader: "ts",
   },
@@ -1148,6 +1149,12 @@ test("provisioning and its traffic alias enforce the same client and reseller bo
   row("Reseller","res-r1").accessExpiresAt = yesterday();
   const denied = await api("u1","POST","/provision/activate",{dataToken:subscription.dataToken,deviceId:"D1"});
   ok(denied,403);
-  assert.equal(denied.body.code,"DEVICE_EXPIRED");
-  assert.equal(denied.body.scope,"device");
+  assert.equal(denied.body.code,"CONFIG_EXPIRED");
+  assert.equal(denied.body.scope,"subscription");
+  assert.equal(denied.body.subscriptionId,subscription.id);
+  row("Subscription",subscription.id).allocationType = null;
+  const legacy = await api("u1","POST","/provision/activate",{dataToken:subscription.dataToken,deviceId:"D1"});
+  ok(legacy,403);
+  assert.equal(legacy.body.code,"DEVICE_EXPIRED");
+  assert.equal(legacy.body.scope,"device");
 });

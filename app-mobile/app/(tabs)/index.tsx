@@ -17,7 +17,8 @@ import { useResponsive } from "@/hooks/useResponsive";
 import UpdatePrompt from "@/components/UpdatePrompt";
 import AnnouncementModal from "@/components/AnnouncementModal";
 import { useTranslation } from "@/localization";
-import type { VpnConnection } from "@/types/api";
+import type { ConnectionsResponse, DataAllocationSummary, VpnConnection } from "@/types/api";
+import { formatAllocationBytes, readAllocationSummary } from "@/services/allocationSummary";
 import { alpha, elevation, layout, radius, spacing, type } from "@/constants/theme";
 import PowerButton from "@/components/ui/PowerButton";
 import QuotaRing from "@/components/ui/QuotaRing";
@@ -159,6 +160,10 @@ export default function HomeScreen() {
   const [ping, setPing] = useState<number | null>(null);
   const [suiviRelais, setSuiviRelais] = useState(SUIVI_RELAIS_INITIAL);
   const [connections, setConnections] = useState<VpnConnection[]>([]);
+  const [allocationSnapshot, setAllocationSnapshot] = useState<{ userId: string; value: DataAllocationSummary } | null>(null);
+  const allocationUserRef = useRef(user?.id);
+  allocationUserRef.current = user?.id;
+  const allocationSummary = allocationSnapshot && allocationSnapshot.userId === user?.id ? allocationSnapshot.value : null;
   const [connectionsLoading, setConnectionsLoading] = useState(false);
   /** Connexions déployées depuis le tableau de bord et jamais encore montrées. */
   const [nouvellesConnexions, setNouvellesConnexions] = useState<string[]>([]);
@@ -213,11 +218,17 @@ export default function HomeScreen() {
   }, [isConnected]);
 
   const fetchConnections = React.useCallback(async () => {
+    const recipient = user?.id;
     try {
       setConnectionsLoading(true);
-      const res = await apiClient.get("/mobile/connections");
+      const res = await apiClient.get<ConnectionsResponse>("/mobile/connections");
+      if (!recipient || recipient !== allocationUserRef.current) return;
       const conns: VpnConnection[] = res.data?.connections || [];
       setConnections(conns);
+      if (res.data?.allocationSummary !== undefined) {
+        try { setAllocationSnapshot({ userId: recipient, value: readAllocationSummary(res.data.allocationSummary) }); }
+        catch { setAllocationSnapshot(null); console.warn('[SXB] ALLOCATION_SUMMARY_INVALID'); }
+      } else setAllocationSnapshot(null);
 
       // ── Nouveauté déployée depuis le tableau de bord ────────────────────
       // Sans cette comparaison, une connexion tout juste ajoutée n'était
@@ -239,7 +250,7 @@ export default function HomeScreen() {
     } finally {
       setConnectionsLoading(false);
     }
-  }, [syncFromConnection, activeConfigId]);
+  }, [syncFromConnection, activeConfigId, user?.id]);
 
   useEffect(() => {
     fetchConnections();
@@ -814,6 +825,24 @@ export default function HomeScreen() {
             </StatRow>
           </Surface>
         </View>
+
+        {isAuthenticated && allocationSummary && (allocationSummary.unlimited || BigInt(allocationSummary.allocatedBytes) > 0n) && (
+          <Surface>
+            <SectionHeader title={t('allocation_summary_title')} icon="wallet-outline" />
+            <View style={{ gap: spacing.sm }}>
+              <Text style={[type.h2, { color: colors.textPrimary, fontVariant: ['tabular-nums'] }]}>
+                {allocationSummary.remainingBytes === null ? t('allocation_unlimited')
+                  : formatAllocationBytes(allocationSummary.remainingBytes)}
+              </Text>
+              <Text style={[type.caption, { color: colors.textSecondary }]}>{t('allocation_available_synced')}</Text>
+              <Text style={[type.body, { color: colors.textSecondary }]}>
+                {t('allocation_sold_total')} {formatAllocationBytes(allocationSummary.soldBytes)}
+                {' · '}{t('allocation_trial_total')} {formatAllocationBytes(allocationSummary.freeTrialBytes)}
+              </Text>
+              <Text style={[type.caption, { color: colors.textSecondary }]}>{t('allocation_separate_usage_hint')}</Text>
+            </View>
+          </Surface>
+        )}
 
         {/* ── QUOTA — Consomme deriveQuota (B1/B4) ──────────────────────────
             Masqué pendant un ESSAI : la carte d'essai, juste au-dessus, porte

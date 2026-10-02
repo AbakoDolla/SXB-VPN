@@ -482,7 +482,7 @@ describe("gardes posées sur la route groupée", () => {
 
   it("contrôle la propriété revendeur forfait par forfait", () => {
     assert.ok(
-      route.includes("possedeClient(sub.client, ficheBulk)"),
+      route.includes("ownsDataAllocation(sub, ficheBulk)"),
       "chaque forfait du lot doit être vérifié, pas seulement le premier",
     );
   });
@@ -539,7 +539,8 @@ describe("attribuer plusieurs forfaits à un appareil en une fois", () => {
   });
 
   it("refuse le lot entier avant d'écrire quand une configuration est interdite", () => {
-    const deploiement = route.slice(route.indexOf("} else if (action === 'deploy') {"), route.indexOf("accessStateHub.invalidate({ clientId });"));
+    const debut = route.indexOf("} else if (action === 'deploy') {");
+    const deploiement = route.slice(debut, route.indexOf("accessStateHub.invalidate({ clientId });", debut));
     const controle = deploiement.indexOf("assertResellerCanUseProfile(req, id)");
     const ecriture = deploiement.indexOf("subscription.create");
     assert.ok(controle >= 0 && ecriture > controle, "les configurations sont validées avant toute écriture");

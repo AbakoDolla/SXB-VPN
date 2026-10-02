@@ -696,6 +696,15 @@ export const en = {
   quota_exhausted: 'Quota exhausted',
   quota_reload: 'Reload your plan',
   quota_not_measured: 'Not measured',
+  allocation_summary_title: 'MY DATA',
+  allocation_unlimited: 'Unlimited',
+  allocation_available_synced: 'Total available at the last sync',
+  allocation_sold_total: 'Sold:',
+  allocation_trial_total: 'Free trials:',
+  allocation_separate_usage_hint: 'Each connection uses only its own plan. Resellers and free trials keep separate counters.',
+  allocation_trial_origin: 'Free trial provided by the platform',
+  allocation_sold_origin: 'Allocation sold by {owner}',
+  allocation_platform: 'the platform',
 
   // ── Free trial card (home screen) ──────────────────────────────────────────
   card_trial_period: 'FREE TRIAL PERIOD',

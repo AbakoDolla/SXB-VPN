@@ -1706,7 +1706,8 @@ router.post(
                   managedById: gestionnaireAInscrire(req.user),
                 },
               });
-            } else if (compte.status !== 'active' || (compte.expireAt && compte.expireAt < expireAt)) {
+            } else if (!compte.resellerId && !compte.quotaTotal &&
+                (compte.status !== 'active' || (compte.expireAt && compte.expireAt < expireAt))) {
               // Réactivation / prolongation d'un compte existant, sans jamais
               // raccourcir une échéance déjà plus lointaine.
               compte = await tx.vpnClient.update({
@@ -2323,8 +2324,6 @@ router.post(
             if (Object.keys(data).length === 0) continue;
 
             await executerMutationQuota(prisma, {
-              resellerUserId: forfait.client?.userId,
-              resellerId: forfait.client?.resellerId ?? null,
               auteur: { userId: req.user?.userId, email: req.user?.email },
               reason: `Gestion d'essai gratuit pour ${demande.name}`,
               referenceType: 'subscription',
@@ -2367,8 +2366,6 @@ router.post(
               for (const profil of profilsAjoutes) {
                 try {
                   await executerMutationQuota(prisma, {
-                    resellerUserId: reference?.client?.userId,
-                    resellerId: reference?.client?.resellerId ?? null,
                     auteur: { userId: req.user?.userId, email: req.user?.email },
                     reason: `Attribution d'un serveur d'essai pour ${demande.name}`,
                     referenceType: 'subscription',

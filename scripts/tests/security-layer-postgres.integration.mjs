@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyDataAllocationIsolation } from './data-allocation-postgres.integration.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 assert.ok(process.env.SXB_SECURITY_TEST_DATABASE_URL, 'An explicitly isolated loopback PostgreSQL test database is required');
@@ -46,6 +47,8 @@ await build({
     export { default as users } from './server/routes/users';
     export { default as auth } from './server/routes/auth';
     export { default as presence } from './server/routes/presence';
+    export { default as subscriptions } from './server/routes/subscriptions';
+    export { default as freeTrial } from './server/routes/free-trial';
     export { prisma } from './server/database';
     export { logDbActivity } from './server/database';
     export * as sessions from './server/services/mobile-session-security';
@@ -54,6 +57,7 @@ await build({
     export * as relay from './server/services/ssh-relay-auth';
     export * as legacyRelayTickets from './server/services/ssh-relay-ticket';
     export * as canonical from './server/services/canonical-config';
+    export { reconcilierAllocationsRevendeurs } from './server/services/reseller-quota';
   `, resolveDir: root, loader: 'ts' },
   outfile: output, platform: 'node', format: 'cjs', bundle: true, packages: 'external',
   nodePaths: [path.join(root, 'backend', 'node_modules')], logLevel: 'silent',
@@ -67,7 +71,7 @@ await build({
   }],
 });
 const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, presence, prisma, sessions, proof, gate, relay,
-  legacyRelayTickets, canonical, logDbActivity } = require(output);
+  legacyRelayTickets, canonical, logDbActivity, subscriptions, freeTrial, reconcilierAllocationsRevendeurs } = require(output);
 const app = express();
 app.use(express.json({ verify: (req, _res, bytes) => { req.rawBody = Buffer.from(bytes); } }));
 app.use('/api/mobile', mobile);
@@ -78,6 +82,8 @@ app.use('/api/sessions', scopedSessions);
 app.use('/api/users', users);
 app.use('/api/auth', auth);
 app.use('/api/presence', presence);
+app.use('/api/subscriptions', subscriptions);
+app.use('/api/free-trial', freeTrial);
 const server = app.listen(0, '127.0.0.1');
 await new Promise(resolve => server.once('listening', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -800,6 +806,7 @@ try {
     if (originalPublication) await prisma.setting.update({ where: { key: publicationKey }, data: { value: originalPublication.value } });
     else await prisma.setting.deleteMany({ where: { key: publicationKey } });
   }
+  await verifyDataAllocationIsolation({ prisma, request, device, jwt, check, owner, role, reconcilierAllocationsRevendeurs });
   console.log(`REAL_POSTGRES_SECURITY_CHECKS=${checks}`);
 } finally {
   globalThis.fetch = nativeFetch;

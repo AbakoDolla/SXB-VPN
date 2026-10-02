@@ -1,4 +1,5 @@
 {
+  "shared_allocation_account": "Ce compte porte des allocations d’autres propriétaires. Modifiez uniquement vos propres forfaits ou contactez l’administration.",
   "free_trial": {
     "update_failed": "Forfait non modifié — voir le journal du serveur.",
     "assign_failed": "Serveur non ajouté — voir le journal du serveur.",

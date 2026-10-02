@@ -368,7 +368,7 @@
     "profileHint": "La suppression sélective exige toujours le déverrouillage actuel de chaque profil, même pour le propriétaire. Les forfaits liés et les conflits avec un moteur bloquent la suppression ; aucune cascade automatique ni désactivation de l'appareil.",
     "clientHint": "Supprime uniquement ces licences VPN et leurs accès associés, pas les comptes de connexion de leurs titulaires. Les revendeurs ne peuvent sélectionner que leurs propres licences.",
     "accountHint": "Les comptes OWNER, ADMIN et SUPER_ADMIN, ainsi que votre propre compte, ne sont jamais sélectionnés ni supprimés par cette opération. Les comptes revendeurs et support doivent être choisis explicitement ; aucun nettoyage automatique.",
-    "subscriptionHint": "Supprime ces forfaits, indépendamment de l'ajout de données ou de la prolongation. L'activation de l'appareil reste intacte. Les revendeurs ne peuvent sélectionner que les forfaits de leurs propres clients.",
+    "subscriptionHint": "Supprime ces forfaits, indépendamment de l'ajout de données ou de la prolongation. L'activation de l'appareil reste intacte. Les revendeurs ne peuvent sélectionner que les allocations qu’ils ont financées, même si le compte appartient à un autre revendeur.",
     "profilePage": "{{count}} profils filtrés. Maximum {{limit}} fiches de configuration affichées par page."
   },
   "common": {

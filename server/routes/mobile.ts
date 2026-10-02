@@ -32,6 +32,7 @@ import { forfaitsEssaiDuClient } from "../services/free-trial-marks";
 import { activateBoundSession, consumeSessionProof } from "../services/mobile-session-security";
 import { updateMobileConnection } from "../services/mobile-connections";
 import { consumeProof, proofFor, securityFailure, type VerifiedProof } from "../services/mobile-proof";
+import { dataAllocationQuotaOwner, dataAllocationType, dataAllocationView, summarizeDataAllocations, withAllocationAccess } from '../services/data-allocation';
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
@@ -106,7 +107,8 @@ async function findClientByUserId(userId: string, clientId?: string | null, devi
       include: mobileAccountInclude,
       take: 2,
     });
-    return clients.length === 1 ? clients[0] : null;
+    if (clients.length !== 1) return null;
+    return { ...clients[0], subscriptions: await withAllocationAccess(prisma, clients[0].subscriptions) };
   }
   const client: any = inMemoryDb.vpnClients.find(
     (c) =>
@@ -363,6 +365,7 @@ export function computeAccountState(client: any, selectedSubscription?: any | nu
   device: { id: string; status: string; code: string; expireAt: string | null; activationRequired: boolean };
   subscription: { id: string; status: string } | null;
   subscriptionState: string | null;
+  allocationSummary: ReturnType<typeof summarizeDataAllocations>;
 } {
   selectedSubscription = selectedSubscription ?? selectMobileSubscription(client);
   const source = selectedSubscription || client;
@@ -425,6 +428,7 @@ export function computeAccountState(client: any, selectedSubscription?: any | nu
     },
     subscription: selectedSubscription ? { id: selectedSubscription.id, status: selectedStatus! } : null,
     subscriptionState: selectedStatus,
+    allocationSummary: summarizeDataAllocations(client.subscriptions ?? [], client.deviceId),
   };
 }
 
@@ -759,7 +763,8 @@ router.get("/me", async (req: AuthenticatedRequest, res: Response) => {
     if (!client) {
       return res.status(404).json({ error: "errors.mobile.no_account", message: "Aucun compte VPN associé" });
     }
-    const accessError = await refusAccesProprietaireClient(prisma, client);
+    const accessError = client.subscriptions?.some((row: any) => row.allocationType != null)
+      ? null : await refusAccesProprietaireClient(prisma, client);
     if (accessError) return res.status(accessError.status).json(accessError.body);
     const requestedSubscriptionId = typeof req.query.subscriptionId === "string" ? req.query.subscriptionId : null;
     const selectedSubscription = selectMobileSubscription(client, requestedSubscriptionId);
@@ -934,6 +939,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     if (requestedSubscriptionId && !sub) {
       return res.status(404).json({ ...subscriptionAccessFailure("deleted", requestedSubscriptionId), error: 'errors.mobile.connection_not_found', message: 'Connexion VPN introuvable' });
     }
+    if (sub && prisma) [sub] = await withAllocationAccess(prisma, [sub]);
 
     const state = computeAccountState(client, sub);
     const selectedStatus = sub ? subscriptionAccessStatus(sub) : null;
@@ -1467,7 +1473,8 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
     // le défaut corrigé côté tableau de bord.
     const forfaitsEssai = await forfaitsEssaiDuClient(prisma, String(client.id));
 
-    const connections = subscriptions.map((sub: any) => {
+    const allocations = await withAllocationAccess(prisma, subscriptions, now);
+    const connections = allocations.map((sub: any) => {
       const profile = sub?.profile || null;
 
       // Protocol technique (SSH, VLESS, Trojan…)
@@ -1507,11 +1514,12 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         sshDirectAvailable: ["ssh", "ssh+payload"].includes(technicalProtocol.toLowerCase()),
         configHash:    configHashForProfile(profile),
         /** Cet accès provient-il d'un essai gratuit déployé ? (marqueur structurel) */
-        isFreeTrial:   forfaitsEssai.has(String(sub.id)),
+        isFreeTrial:   dataAllocationType(sub) === 'free_trial' || forfaitsEssai.has(String(sub.id)),
+        allocation: dataAllocationView({ ...sub, client }),
       };
     });
 
-    return res.json({ connections });
+    return res.json({ connections, allocationSummary: summarizeDataAllocations(allocations, client.deviceId, now) });
   } catch (err) {
     console.error("Mobile /connections error:", err);
     return res.status(500).json({ error: "errors.server", message: "Impossible de charger les connexions" });
@@ -1592,7 +1600,7 @@ router.delete("/connections/:id", async (req: AuthenticatedRequest, res: Respons
     if (!sub) return res.status(404).json(subscriptionAccessFailure("deleted", id));
 
     await executerMutationQuota(prisma, {
-      resellerId: client.resellerId ?? null,
+      ...dataAllocationQuotaOwner({ ...sub, client }),
       auteur: { userId: req.user!.userId, email: req.user!.email },
       reason: `Suppression du forfait ${sub.name} depuis l'application`,
       referenceType: "subscription",

@@ -110,6 +110,14 @@ export default function ConnectionCard({ conn, isActive, activeQuota }: Connecti
         <Pill label={statusLabel} tone={statusColor} dot />
       </View>
 
+      {conn.allocation && (
+        <Text style={[type.caption, { color: colors.textSecondary }]}>
+          {conn.allocation.type === 'free_trial' ? t('allocation_trial_origin')
+            : t('allocation_sold_origin').replace('{owner}', conn.allocation.ownerName && conn.allocation.ownerName !== 'Systeme'
+              ? conn.allocation.ownerName : t('allocation_platform'))}
+        </Text>
+      )}
+
       {totalBytes > 0 ? (
         <>
           <View style={styles.quotaHead}>

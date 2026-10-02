@@ -4,7 +4,8 @@ import type { Prisma } from "@prisma/client";
 import type { AuthenticatedRequest } from "../middleware/auth";
 import { prisma, inMemoryDb } from "../database";
 import { configHashForProfile, configVersionForProfile } from "./config-hash";
-import { mobileClientSelect, invalidMobileSession } from "./mobile-principal";
+import { mobileClientSelect, mobileClientOwner, invalidMobileSession } from "./mobile-principal";
+import { withAllocationAccess } from "./data-allocation";
 import {
   deviceAccessStatus, subscriptionAccessStatus, MobileAccessError, sessionInvalidFailure,
   type DeviceAccessStatus, type SubscriptionAccessStatus,
@@ -42,6 +43,7 @@ const profileSelect = {
 } satisfies Prisma.VpnProfileSelect;
 const subscriptionSelect = {
   id: true, name: true, status: true, quotaBytes: true, quotaUsed: true, expireAt: true,
+  allocationType: true, allocationResellerId: true,
   profile: { select: profileSelect },
 } satisfies Prisma.SubscriptionSelect;
 
@@ -71,7 +73,8 @@ export async function readMobileAccessSnapshot(identity: AccessCredential): Prom
   const bindingLost = !!client && (client.deviceId !== identity.deviceId || !client.activatedAt);
   if ((!client || bindingLost) && !identity.boundInToken) invalidMobileSession();
   const now = Date.now();
-  const status = bindingLost ? "revoked" : deviceAccessStatus(client, client?.reseller ?? client?.user?.resellerInfo, now);
+  const status = bindingLost ? "revoked" : deviceAccessStatus(client, mobileClientOwner(client), now);
+  const allocations = client && !bindingLost && prisma ? await withAllocationAccess(prisma, client.subscriptions, now) : client?.subscriptions ?? [];
   const content = {
     device: {
       id: identity.clientId, status,
@@ -79,7 +82,7 @@ export async function readMobileAccessSnapshot(identity: AccessCredential): Prom
       expireAt: client?.expireAt ? new Date(client.expireAt).toISOString() : null,
       activationRequired: status === "deleted" || !client || bindingLost || !client.activatedAt,
     },
-    subscriptions: !client || bindingLost || status === "deleted" ? [] : client.subscriptions.map(sub => {
+    subscriptions: !client || bindingLost || status === "deleted" ? [] : allocations.map(sub => {
       const profile = "profile" in sub ? sub.profile : undefined;
       const hash = configHashForProfile(profile);
       return {
