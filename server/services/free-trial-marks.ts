@@ -149,7 +149,7 @@ export async function forfaitsEssaiDuClient(db: any, clientId: string): Promise<
     );
     if (db.subscription) {
       const marques = await db.subscription.findMany({
-        where: { clientId, freeTrialRequestId: { not: null } },
+        where: { clientId, OR: [{ freeTrialRequestId: { not: null } }, { allocationType: 'free_trial' }] },
         select: { id: true },
       });
       for (const forfait of marques as any[]) forfaits.add(String(forfait.id));
@@ -227,10 +227,13 @@ export async function porteeEssaiDeploye(db: any): Promise<PorteeEssai> {
     // réapparaîtraient dans « Forfaits Data ».
     if (db.subscription) {
       const marques = await db.subscription.findMany({
-        where: { freeTrialRequestId: { not: null } },
+        where: { OR: [{ freeTrialRequestId: { not: null } }, { allocationType: 'free_trial' }] },
         select: { id: true, clientId: true },
       });
-      for (const forfait of marques as any[]) subscriptionIds.add(String(forfait.id));
+      for (const forfait of marques as any[]) {
+        subscriptionIds.add(String(forfait.id));
+        if (forfait.clientId && !clientIds.includes(String(forfait.clientId))) clientIds.push(String(forfait.clientId));
+      }
     }
     if (clientIds.length === 0) {
       return {
@@ -330,4 +333,3 @@ export function etFiltres(
   if (retenus.length === 1) return retenus[0];
   return { AND: retenus };
 }
-

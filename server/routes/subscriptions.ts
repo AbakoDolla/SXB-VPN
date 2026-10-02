@@ -48,6 +48,7 @@ import {
   porteeEssaiDeploye,
 } from '../services/free-trial-marks';
 import crypto from 'crypto';
+import { dataAllocationOwner, dataAllocationQuotaOwner, dataAllocationScope, dataAllocationView, ownsDataAllocation } from '../services/data-allocation';
 
 const router = Router();
 const GIB = 1024 ** 3;
@@ -67,7 +68,8 @@ const deviceLimitSchema = z.coerce.number()
 const subscriptionStatusSchema = z.enum(['active', 'suspended', 'expired', 'revoked']);
 
 const createSubscriptionSchema = z.object({
-  clientId: identifiantSchema,
+  clientId: identifiantSchema.optional(),
+  recipientToken: z.string().trim().min(10).max(255).optional(),
   profileId: identifiantSchema,
   // Un nom vide demande le nom automatique, y compris depuis un ancien dashboard.
   name: z.string().trim().max(160, 'Le nom ne peut pas dépasser 160 caractères.').optional(),
@@ -75,7 +77,9 @@ const createSubscriptionSchema = z.object({
   durationDays: durationDaysSchema,
   deviceLimit: deviceLimitSchema.default(1),
   deviceId: z.string().trim().min(1).max(255).optional(),
-}).strict();
+}).strict().refine(body => Boolean(body.clientId) !== Boolean(body.recipientToken), {
+  message: 'Choisissez un client ou son code de compte existant, pas les deux.',
+});
 
 const updateSubscriptionSchema = z.object({
   name: z.string().trim().min(1).max(160).optional(),
@@ -216,7 +220,7 @@ function generateDataToken(): string {
 // les champs BigInt de Prisma bruts.
 // `canSeeTechnical` est volontairement OBLIGATOIRE : une valeur par défaut
 // permissive rouvrirait la fuite au premier appel où on l'oublierait.
-function serializeSub(sub: any, canSeeTechnical: boolean): any {
+function serializeSub(sub: any, canSeeTechnical: boolean, resellerId?: string | null): any {
   if (!sub) return sub;
   const s = { ...sub };
   if (typeof s.quotaBytes === 'bigint') s.quotaBytes = s.quotaBytes.toString();
@@ -228,8 +232,15 @@ function serializeSub(sub: any, canSeeTechnical: boolean): any {
   // Identité du revendeur remontée au niveau du forfait : le client imbriqué
   // ne la portait nulle part, si bien qu'un administrateur lisant la liste des
   // forfaits ne pouvait pas dire de quel revendeur relevait chaque ligne.
-  s.resellerId = s.client?.resellerId ?? null;
-  s.resellerName = s.client?.reseller?.name ?? null;
+  const owner = dataAllocationOwner(sub);
+  s.resellerId = owner.resellerId;
+  s.resellerName = owner.ownerName ?? (sub.allocationType == null ? s.client?.reseller?.name : null) ?? null;
+  s.allocation = dataAllocationView(sub);
+  s.quotaRemaining = s.allocation.remainingBytes;
+  if (resellerId && s.client && s.client.resellerId !== resellerId) {
+    s.client = { id: s.client.id, userId: s.client.userId, deviceId: s.client.deviceId,
+      user: { name: s.client.user?.name ?? null } };
+  }
   return s;
 }
 
@@ -291,7 +302,7 @@ function canViewTechnicalProfile(req: AuthenticatedRequest): boolean {
   return req.user.permissions?.includes('vpnprofile.view') === true;
 }
 
-async function assertResellerCanAssignQuota(req: AuthenticatedRequest, clientId: string, quotaBytes: bigint, previousQuotaBytes = BigInt(0), subscriptionId?: string) {
+async function assertResellerCanAssignQuota(req: AuthenticatedRequest, clientId: string, quotaBytes: bigint, previousQuotaBytes = BigInt(0), subscriptionId?: string, recipientAuthorized = false) {
   // Compartiment administrateur : un identifiant deviné ne doit pas permettre
   // d'attacher un forfait au client d'un pair. Contrôlé AVANT le cas revendeur,
   // qui a ses propres règles de quota.
@@ -319,7 +330,10 @@ async function assertResellerCanAssignQuota(req: AuthenticatedRequest, clientId:
   if (!client) {
     return { status: 404, body: { error: 'errors.clients.not_found', message: 'Client VPN introuvable' } };
   }
-  if (!possedeClient(client, fiche)) {
+  const existing = subscriptionId ? await prisma.subscription.findUnique({
+    where: { id: subscriptionId }, include: { client: true },
+  }) : null;
+  if (subscriptionId ? !ownsDataAllocation(existing, fiche) : !recipientAuthorized && !possedeClient(client, fiche)) {
     return refusPropriete();
   }
   // Le forfait en cours de modification est retiré du cumul, sinon son ancien
@@ -401,7 +415,7 @@ router.get('/', requireAuth, requirePermission('subscription.view'), async (req:
       const all = inMemoryDb.subscriptions || [];
       const ficheMemoire = isReseller ? await chargerFicheRevendeur(null, req.user?.userId) : null;
       const scoped = isReseller
-        ? all.filter((s: any) => possedeClient(s.client, ficheMemoire))
+        ? all.filter((s: any) => ownsDataAllocation(s, ficheMemoire))
         : all;
       return res.json({ success: true, subscriptions: scoped.map((s: any) => serializeSub(s, canSeeTechnical)) });
     }
@@ -418,7 +432,8 @@ router.get('/', requireAuth, requirePermission('subscription.view'), async (req:
       orderBy: { createdAt: 'desc' },
       include: INCLUDE_FORFAIT,
     });
-    return res.json({ success: true, subscriptions: subs.map((s: any) => serializeSub(s, canSeeTechnical)) });
+    const resellerId = isReseller ? (await chargerFicheRevendeur(prisma, req.user!.userId))?.id : null;
+    return res.json({ success: true, subscriptions: subs.map((s: any) => serializeSub(s, canSeeTechnical, resellerId)) });
   } catch (err: any) {
     console.error('subscriptions list error:', err);
     return res.status(500).json({ error: err.message || 'Failed to list subscriptions' });
@@ -437,7 +452,7 @@ router.get('/stats', requireAuth, requirePermission('subscription.view'), async 
     if (!prisma) {
       const ficheMemoire = isReseller ? await chargerFicheRevendeur(null, req.user?.userId) : null;
       const subs = isReseller
-        ? (inMemoryDb.subscriptions || []).filter((s: any) => possedeClient(s.client, ficheMemoire))
+        ? (inMemoryDb.subscriptions || []).filter((s: any) => ownsDataAllocation(s, ficheMemoire))
         : inMemoryDb.subscriptions || [];
       const total   = subs.length;
       const active  = subs.filter(s => s.status === 'active').length;
@@ -479,10 +494,11 @@ router.get('/:id', requireAuth, requirePermission('subscription.view'), async (r
     if (!possedeClientCloisonne(req.user, sub.client)) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
-    if (isReseller && !possedeClient(sub.client, await chargerFicheRevendeur(prisma, req.user?.userId))) {
+    const reseller = isReseller ? await chargerFicheRevendeur(prisma, req.user?.userId) : null;
+    if (isReseller && !ownsDataAllocation(sub, reseller)) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
-    return res.json({ success: true, subscription: serializeSub(sub, canSeeTechnical) });
+    return res.json({ success: true, subscription: serializeSub(sub, canSeeTechnical, reseller?.id) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to get subscription' });
   }
@@ -503,15 +519,26 @@ router.post(
   async (req: AuthenticatedRequest, res: Response) => {
   try {
     const body = createSubscriptionSchema.parse(req.body);
-    const { clientId, profileId, name, quotaGB, durationDays, deviceLimit, deviceId } = body;
+    const { profileId, name, quotaGB, durationDays, deviceLimit, deviceId } = body;
 
     const [client, profile] = await Promise.all([
-      prisma.vpnClient.findUnique({ where: { id: clientId } }),
+      prisma.vpnClient.findUnique({
+        where: body.recipientToken ? { token: body.recipientToken } : { id: body.clientId! },
+        include: { user: { include: { role: true } }, managedBy: { include: { role: true } } },
+      }),
       (prisma as any).vpnProfile.findUnique({ where: { id: profileId } }),
     ]);
     if (!client) return res.status(404).json({ error: 'Client VPN introuvable' });
+    const clientId = client.id;
+    if (!possedeClientCloisonne(req.user, client) ||
+        body.recipientToken && client.user?.role?.name !== 'CLIENT') {
+      return res.status(404).json({ error: 'Client VPN introuvable' });
+    }
     if (!profile) return res.status(404).json({ error: 'Profil VPN introuvable' });
-    const accessError = await refusAccesProprietaireClient(prisma, client);
+    const seller = req.user?.role === 'RESELLER'
+      ? (req as any).reseller ?? await chargerFicheRevendeur(prisma, req.user.userId)
+      : client.resellerId ? await prisma.reseller.findUnique({ where: { id: client.resellerId } }) : null;
+    const accessError = seller ? await refusAccesProprietaireClient(prisma, { resellerId: seller.id }) : null;
     if (accessError) return res.status(accessError.status).json(accessError.body);
 
     const quotaBytes = gigabytesToBytes(quotaGB);
@@ -523,7 +550,7 @@ router.post(
       fiche: (req as any).reseller,
     });
     if (plafondAtteint) return res.status(plafondAtteint.status).json(plafondAtteint.body);
-    const quotaError = await assertResellerCanAssignQuota(req, clientId, quotaBytes);
+    const quotaError = await assertResellerCanAssignQuota(req, clientId, quotaBytes, 0n, undefined, Boolean(body.recipientToken));
     if (quotaError) return res.status(quotaError.status).json(quotaError.body);
     const profileError = await assertResellerCanUseProfile(req, profileId);
     if (profileError) return res.status(profileError.status).json(profileError.body);
@@ -532,8 +559,8 @@ router.post(
     const dataToken  = generateDataToken();
 
     const sub: any = await executerMutationQuota(prisma, {
-      resellerUserId: client.userId,
-      resellerId: client.resellerId ?? null,
+      resellerUserId: seller?.userId ?? client.userId,
+      resellerId: seller?.id ?? null,
       auteur: { userId: req.user?.userId, email: req.user?.email },
       reason: `Creation du forfait ${name || profile.name}`,
       referenceType: 'subscription',
@@ -547,7 +574,7 @@ router.post(
         quotaUsed:    BigInt(0),
         durationDays,
         deviceLimit,
-        deviceId:     deviceId || null,
+        deviceId:     deviceId || client.deviceId || null,
         startAt,
         expireAt,
         status:       'active',
@@ -557,7 +584,9 @@ router.post(
     }));
 
     await logDbActivity(req.user!.userId, `Forfait créé : "${sub.name}" pour client ${clientId}`, 'info', req.ip || '');
-    return res.status(201).json({ success: true, subscription: serializeSub(sub, canViewTechnicalProfile(req)) });
+    accessStateHub.invalidate({ clientId });
+    return res.status(201).json({ success: true, subscription: serializeSub(sub, canViewTechnicalProfile(req),
+      req.user?.role === 'RESELLER' ? seller?.id : null) });
   } catch (err: any) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: 'errors.validation', details: err.issues });
@@ -680,7 +709,7 @@ router.post(
           // sinon une réactivation (qui réengage tout le volume d'un forfait
           // expiré) échapperait au plafond.
           const cibles = await (prisma as any).subscription.findMany({
-            where: { id: { in: targetIds }, client: porteeClientsRevendeur(reseller) },
+            where: { AND: [{ id: { in: targetIds } }, dataAllocationScope(reseller)] },
             select: { id: true, profileId: true, quotaBytes: true, quotaUsed: true, durationDays: true, startAt: true, expireAt: true, status: true },
           });
           projected += deltaAllocationGroupee(cibles, changements);
@@ -688,9 +717,9 @@ router.post(
           const activeTargets = await (prisma as any).subscription.findMany({
             where: {
               id: { in: targetIds },
-              client: porteeClientsRevendeur(reseller),
+              ...dataAllocationScope(reseller),
               status: 'active',
-              OR: [{ expireAt: null }, { expireAt: { gt: new Date() } }],
+              AND: [{ OR: [{ expireAt: null }, { expireAt: { gt: new Date() } }] }],
             },
             select: { quotaBytes: true },
           });
@@ -738,7 +767,7 @@ router.post(
           });
           // 404 et non 403 : ne pas confirmer l'existence d'un forfait
           // appartenant à un autre revendeur.
-          if (!sub || (isReseller && !possedeClient(sub.client, ficheBulk))) {
+          if (!sub || (isReseller && !ownsDataAllocation(sub, ficheBulk))) {
             failed++; details.push({ id: subId, status: 'failed', reason: 'errors.subscriptions.not_found' });
             continue;
           }
@@ -756,15 +785,17 @@ router.post(
           // pour le PUT unitaire.
           const augmente = (plan.engageApres ? plan.quotaApres : BigInt(0)) > (plan.engageAvant ? plan.quotaAvant : BigInt(0));
           if (augmente) {
-            const accessError = await refusAccesProprietaireClient(prisma, sub.client);
+            const accessError = await refusAccesProprietaireClient(prisma, {
+              resellerId: dataAllocationOwner(sub).resellerId,
+              userId: dataAllocationQuotaOwner(sub).resellerUserId,
+            });
             if (accessError) {
               failed++; details.push({ id: subId, status: 'failed', reason: accessError.body.message });
               continue;
             }
           }
           await executerMutationQuota(prisma, {
-            resellerUserId: sub.client.userId,
-            resellerId: sub.client.resellerId ?? null,
+            ...dataAllocationQuotaOwner(sub),
             auteur: { userId: req.user?.userId, email: req.user?.email },
             reason: 'Application groupee sur un forfait',
             referenceType: 'subscription',
@@ -870,7 +901,7 @@ router.post(
             where: { id: subId },
             include: { client: { select: { userId: true, resellerId: true } } },
           });
-          if (!sub || (isReseller && !possedeClient(sub.client, ficheBulk))) {
+          if (!sub || (isReseller && !ownsDataAllocation(sub, ficheBulk))) {
             failed++; details.push({ id: subId, status: 'failed', reason: 'Forfait introuvable' });
             continue;
           }
@@ -905,8 +936,7 @@ router.post(
             continue;
           }
           await executerMutationQuota(prisma, {
-            resellerUserId: sub.client.userId,
-            resellerId: sub.client.resellerId ?? null,
+            ...dataAllocationQuotaOwner(sub),
             auteur: { userId: req.user?.userId, email: req.user?.email },
             reason: `Operation groupee ${action} sur un forfait`,
             referenceType: 'subscription',
@@ -1006,11 +1036,14 @@ router.put(
 
     if (req.user?.role === 'RESELLER') {
       const fiche = (req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user.userId));
-      if (!possedeClient(existing.client, fiche)) {
+      if (!ownsDataAllocation(existing, fiche)) {
         return res.status(404).json({ error: 'Subscription not found' });
       }
       if (!reduitExposition) {
-        const accessError = await refusAccesProprietaireClient(prisma, existing.client);
+        const accessError = await refusAccesProprietaireClient(prisma, {
+          resellerId: dataAllocationOwner(existing).resellerId,
+          userId: dataAllocationQuotaOwner(existing).resellerUserId,
+        });
         if (accessError) return res.status(accessError.status).json(accessError.body);
         const quotaError = await assertResellerCanAssignQuota(req, existing.clientId, quotaBytes, existing.quotaBytes, existing.id);
         if (quotaError) return res.status(quotaError.status).json(quotaError.body);
@@ -1029,8 +1062,7 @@ router.put(
     }
 
     const updated: any = await executerMutationQuota(prisma, {
-      resellerUserId: existing.client.userId,
-      resellerId: existing.client.resellerId ?? null,
+      ...dataAllocationQuotaOwner(existing),
       auteur: { userId: req.user?.userId, email: req.user?.email },
       reason: `Modification du forfait ${existing.name}`,
       referenceType: 'subscription',
@@ -1054,7 +1086,8 @@ router.put(
 
     accessStateHub.invalidate({ clientId: existing.clientId });
     await logDbActivity(req.user!.userId, `Forfait mis à jour : ${updated.name}`, 'info', req.ip || '');
-    return res.json({ success: true, subscription: serializeSub(updated, canViewTechnicalProfile(req)) });
+    return res.json({ success: true, subscription: serializeSub(updated, canViewTechnicalProfile(req),
+      req.user?.role === 'RESELLER' ? (await chargerFicheRevendeur(prisma, req.user.userId))?.id : null) });
   } catch (err: any) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: 'errors.validation', details: err.issues });
@@ -1098,14 +1131,13 @@ router.post(
             where: { id },
             include: { client: true },
           });
-          if (!existing || (reseller && !possedeClient(existing.client, reseller))) {
+          if (!existing || (reseller && !ownsDataAllocation(existing, reseller))) {
             failed.push({ id, error: 'errors.subscriptions.not_found' });
             continue;
           }
 
           await executerMutationQuota(prisma, {
-            resellerUserId: existing.client.userId,
-            resellerId: existing.client.resellerId ?? null,
+            ...dataAllocationQuotaOwner(existing),
             auteur: { userId: req.user?.userId, email: req.user?.email },
             reason: `Suppression du forfait ${existing.name}`,
             referenceType: 'subscription',
@@ -1149,12 +1181,11 @@ router.delete(
     });
     if (!existing) return res.status(404).json({ error: 'Subscription not found' });
     if (req.user?.role === 'RESELLER'
-      && !possedeClient(existing.client, (req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user.userId)))) {
+      && !ownsDataAllocation(existing, (req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user.userId)))) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
     await executerMutationQuota(prisma, {
-      resellerUserId: existing.client.userId,
-      resellerId: existing.client.resellerId ?? null,
+      ...dataAllocationQuotaOwner(existing),
       auteur: { userId: req.user?.userId, email: req.user?.email },
       reason: `Suppression du forfait ${existing.name}`,
       referenceType: 'subscription',
@@ -1186,12 +1217,11 @@ router.post(
     });
     if (!existing) return res.status(404).json({ error: 'Subscription not found' });
     if (req.user?.role === 'RESELLER'
-      && !possedeClient(existing.client, (req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user.userId)))) {
+      && !ownsDataAllocation(existing, (req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user.userId)))) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
     const sub: any = await executerMutationQuota(prisma, {
-      resellerUserId: existing.client.userId,
-      resellerId: existing.client.resellerId ?? null,
+      ...dataAllocationQuotaOwner(existing),
       auteur: { userId: req.user?.userId, email: req.user?.email },
       reason: reason || 'Revocation du forfait',
       referenceType: 'subscription',

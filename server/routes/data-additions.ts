@@ -23,6 +23,7 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from "../middlew
 import { porteeClients, porteeClientsForfait } from "../services/portee-donnees";
 import { etFiltres, exclureIdentifiants, porteeEssaiDeploye } from "../services/free-trial-marks";
 import { serialiserAjout, versOctets } from "../services/data-additions";
+import { chargerFicheRevendeur } from "../services/reseller-access";
 
 const router = Router();
 
@@ -48,7 +49,10 @@ async function portees(req: AuthenticatedRequest): Promise<Portees> {
   const essai = await porteeEssaiDeploye(prisma);
   const clients = await porteeClients(prisma, req.user);
   let ajouts: Record<string, unknown> | null = null;
-  if (clients) {
+  if (req.user?.role === 'RESELLER') {
+    const seller = await chargerFicheRevendeur(prisma, req.user.userId);
+    ajouts = seller ? { allocationResellerId: seller.id, allocationType: 'sold' } : { id: '__aucun__' };
+  } else if (clients) {
     const visibles = await (prisma as any).vpnClient.findMany({ where: clients, select: { id: true } });
     ajouts = { clientId: { in: (visibles as Array<{ id: string }>).map(c => c.id) } };
   }

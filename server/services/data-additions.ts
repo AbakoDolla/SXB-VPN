@@ -19,6 +19,7 @@
  * Un nouveau chemin d'ajout, écrit demain, sera consigné sans qu'on y pense.
  */
 import type { AuteurQuota } from "./reseller-quota";
+import { dataAllocationType } from "./data-allocation";
 
 /** Volume initial d'un forfait, ou hausse d'un forfait qui existait déjà. */
 export type NatureAjout = "creation" | "ajout";
@@ -133,6 +134,8 @@ export function journaliserAjouts(tx: any, contexte: { auteur: AuteurQuota }): J
         where: { id: { in: [...touches] } },
         select: {
           id: true, name: true, profileId: true, clientId: true, quotaBytes: true, freeTrialRequestId: true,
+          allocationUserId: true, allocationOwnerId: true, allocationOwnerName: true,
+          allocationResellerId: true, allocationType: true,
           profile: { select: { name: true } },
           client: { select: { user: { select: { name: true, email: true } } } },
         },
@@ -157,7 +160,12 @@ export function journaliserAjouts(tx: any, contexte: { auteur: AuteurQuota }): J
           addedBytes: ajoute,
           quotaBeforeBytes: initial,
           quotaAfterBytes: apres,
-          freeTrial: Boolean(ligne.freeTrialRequestId),
+          freeTrial: dataAllocationType(ligne) === 'free_trial',
+          allocationUserId: ligne.allocationUserId ?? null,
+          allocationOwnerId: ligne.allocationOwnerId ?? null,
+          allocationOwnerName: ligne.allocationOwnerName ?? null,
+          allocationResellerId: ligne.allocationResellerId ?? null,
+          allocationType: dataAllocationType(ligne),
         });
       }
       if (ajouts.length === 0) return;
@@ -182,6 +190,9 @@ export function serialiserAjout(ligne: any) {
     clientId: ligne.clientId,
     clientName: ligne.clientName,
     actorName: ligne.actorName,
+    userId: ligne.allocationUserId ?? null,
+    resellerId: ligne.allocationResellerId ?? null,
+    allocationType: ligne.allocationType ?? (ligne.freeTrial ? 'free_trial' : 'sold'),
     kind: ligne.kind === "creation" ? "creation" : "ajout",
     addedBytes: octets(ligne.addedBytes).toString(),
     quotaBeforeBytes: octets(ligne.quotaBeforeBytes).toString(),

@@ -67,7 +67,8 @@ const businessFingerprint = () => sql(`SELECT md5(jsonb_build_array(
     'refreshGeneration','refreshJti','refreshIssuedAt','previousRefreshJti','refreshRetryUntil']
    FROM activation_sessions t WHERE id='rollout-activation'),
   (SELECT to_jsonb(t) - 'json_config' FROM vpn_profiles t WHERE id='rollout-profile'),
-  (SELECT to_jsonb(t) FROM subscriptions t WHERE id='rollout-subscription'),
+  (SELECT to_jsonb(t) - ARRAY['allocationUserId','allocationOwnerId','allocationOwnerName',
+    'allocationResellerId','allocationType','allocationOrigin'] FROM subscriptions t WHERE id='rollout-subscription'),
   (SELECT to_jsonb(t) FROM traffic_usage t WHERE id='rollout-usage'),
   (SELECT to_jsonb(t) - ARRAY['sessionId','sessionGeneration','connectionId','eventKey','policyVersion','riskLevel']
    FROM security_events t WHERE id='rollout-event'))::text);`);

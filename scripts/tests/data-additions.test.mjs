@@ -135,7 +135,13 @@ test("les forfaits d'essai gratuit sont consignés mais jamais montrés dans l'h
   ok(forfait, 201);
   const id = forfait.body.subscription.id;
   row("Subscription", id).freeTrialRequestId = "demande-essai-1";
-  ok(await ajouterDonnees("r1", id, 3));
+  row("Subscription", id).allocationType = "free_trial";
+  row("Subscription", id).allocationResellerId = null;
+  const resellerAttempt = await ajouterDonnees("r1", id, 3);
+  ok(resellerAttempt);
+  assert.equal(resellerAttempt.body.failed, 1);
+  assert.equal(ajouts().length, 1);
+  ok(await ajouterDonnees("root", id, 3));
   assert.equal(ajouts().length, 2);
   assert.equal(ajouts()[1].freeTrial, true);
 

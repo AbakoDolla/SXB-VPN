@@ -34,7 +34,8 @@ import {
   exclureIdentifiants,
   porteeEssaiDeploye,
 } from "../services/free-trial-marks";
-import { porteeBons, porteeClients, porteeRevendeurs, porteeServeurs } from "../services/portee-donnees";
+import { porteeBons, porteeClients, porteeClientsAllocations, porteeRevendeurs, porteeServeurs } from "../services/portee-donnees";
+import { resellerClientAllocationView, resellerTrafficAllocationScope } from "../services/data-allocation";
 
 const router = Router();
 const ROLES_QUOTA_REVENDEURS = new Set(["OWNER", "SUPER_ADMIN", "ADMIN"]);
@@ -158,7 +159,7 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       // Compartiment du requérant : OWNER voit tout, SUPER_ADMIN tout sauf le
       // OWNER, ADMIN son seul parc, RESELLER ses seuls clients.
       const clientStealthWhere = etFiltres(
-        await porteeClients(prisma, req.user),
+        await porteeClientsAllocations(prisma, req.user),
         exclusionEssais,
       ) ?? {};
       // Compartiment du requérant, POUR CHAQUE FAMILLE D'OBJETS.
@@ -205,6 +206,8 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
 
       const clients = await prisma.vpnClient.findMany({
         select: {
+          userId: true,
+          resellerId: true,
           status: true,
           expireAt: true,
           quotaTotal: true,
@@ -212,12 +215,14 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
           // Sans cette lecture, le provisionné ignore la quasi-totalité du
           // volume réellement vendu : 2 015 419 Gio vivent ici, pas sur la fiche.
           subscriptions: {
-            select: { quotaBytes: true, quotaUsed: true, status: true, expireAt: true },
+            where: !isReseller && porteeEssai ? exclureIdentifiants("id", porteeEssai.subscriptionIds) ?? undefined : undefined,
+            select: { id: true, quotaBytes: true, quotaUsed: true, status: true, expireAt: true,
+              allocationType: true, allocationResellerId: true, freeTrialRequestId: true },
           },
         },
         ...(Object.keys(clientStealthWhere).length ? { where: clientStealthWhere } : {}),
       });
-      const lignesQuota = clients as LigneQuotaClient[];
+      const lignesQuota = clients.map(client => resellerClientAllocationView(client, ficheRevendeur));
       agregatQuota = agregerQuotaClients(lignesQuota);
       provenance = provenanceQuota(lignesQuota);
       provisionedTrafficBytes = agregatQuota.provisionedBytes;
@@ -498,7 +503,7 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
     // y lisait le trafic cumulé de ses concurrents. Il ne doit voir que le sien,
     // et un administrateur que celui de son propre parc.
     const isReseller = req.user?.role === "RESELLER";
-    const clientStealthWhere = (await porteeClients(prisma, req.user)) ?? {};
+    const clientStealthWhere = (await porteeClientsAllocations(prisma, req.user)) ?? {};
     if (prisma) {
       const clientIds = (await prisma.vpnClient.findMany({
         select: { id: true },
@@ -509,7 +514,9 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
       lastDay.setHours(23, 59, 59, 999);
       const usageRows = clientIds.length
         ? await (prisma as any).trafficUsage.findMany({
-            where: { clientId: { in: clientIds }, timestamp: { gte: firstDay, lte: lastDay } },
+            where: { clientId: { in: clientIds }, timestamp: { gte: firstDay, lte: lastDay },
+              ...(isReseller ? await resellerTrafficAllocationScope(prisma,
+                await chargerFicheRevendeur(prisma, req.user?.userId)) : {}) },
             select: { download: true, upload: true, timestamp: true },
           })
         : [];

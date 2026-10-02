@@ -393,11 +393,11 @@ test("lifecycle: control tickets have a separate key, bounded expiry and cannot 
 
 test("lifecycle: tickets retain minimal observation on user/owner blocks, deletion and reset without inheriting another binding", async () => {
   bind();
-  ok(await createSub(), 201);
+  const assigned = await createSub();
+  ok(assigned, 201);
   const control = await ticket();
   for (const [model, id, status, expected] of [
     ["User", "u1", "suspended", "suspended"], ["User", "u1", "revoked", "revoked"],
-    ["Reseller", "res-r1", "suspended", "suspended"], ["User", "r1", "revoked", "revoked"],
   ]) {
     row(model, id).status = status;
     const snapshot = await state(control.ticket);
@@ -406,8 +406,25 @@ test("lifecycle: tickets retain minimal observation on user/owner blocks, deleti
     ok(await request("/mobile/access-ticket", accessToken(), { method: "POST", body: {} }), 403);
     row(model, id).status = "active";
   }
+  for (const [model, id, status] of [
+    ["Reseller", "res-r1", "suspended"], ["User", "r1", "revoked"],
+  ]) {
+    row(model, id).status = status;
+    const snapshot = await state(control.ticket);
+    ok(snapshot);
+    assert.equal(snapshot.body.device.status, "active");
+    assert.equal(snapshot.body.subscriptions.find(sub => sub.id === assigned.body.subscription.id).status, "suspended");
+    ok(await request("/mobile/connections"));
+    ok(await request("/mobile/access-ticket", accessToken(), { method: "POST", body: {} }));
+    row(model, id).status = "active";
+  }
   row("Reseller", "res-r1").accessExpiresAt = yesterday();
-  assert.equal((await state(control.ticket)).body.device.status, "expired");
+  const scopedExpiry = await state(control.ticket);
+  assert.equal(scopedExpiry.body.device.status, "active");
+  assert.equal(scopedExpiry.body.subscriptions.find(sub => sub.id === assigned.body.subscription.id).status, "expired");
+  row("Subscription", assigned.body.subscription.id).allocationType = null;
+  assert.equal((await state(control.ticket)).body.device.status, "expired", "legacy ownership remains device-scoped");
+  row("Subscription", assigned.body.subscription.id).allocationType = "sold";
   row("Reseller", "res-r1").accessExpiresAt = tomorrow();
   row("VpnClient", "c1").deviceId = "NEW-DEVICE";
   const reset = await state(control.ticket);

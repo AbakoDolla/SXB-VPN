@@ -306,6 +306,8 @@ jobs:
               --schema=prisma/schema.prisma
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
               node scripts/verify-prisma-runtime.cjs
+            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
+              node scripts/reconcile-allocation-ledger.cjs
 
             # Amorçage du compte propriétaire racine. `POST /api/users` refuse de
             # créer un OWNER si le demandeur n'en est pas un : le tout premier ne

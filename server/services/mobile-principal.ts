@@ -12,6 +12,7 @@ export const mobileClientSelect = {
   id: true, userId: true, deviceId: true, activatedAt: true, expireAt: true, status: true, resellerId: true,
   user: { select: { id: true, email: true, status: true, resellerInfo: { select: ownerSelect } } },
   reseller: { select: ownerSelect },
+  subscriptions: { select: { allocationType: true } },
 } satisfies Prisma.VpnClientSelect;
 
 export interface MobileClaims extends SecurityClaims {
@@ -61,5 +62,6 @@ export async function loadMobileClient(claims: MobileClaims, deviceId: string | 
 }
 
 export function mobileClientOwner(client: Awaited<ReturnType<typeof loadMobileClient>>) {
+  if (client && 'subscriptions' in client && client.subscriptions?.some(row => row.allocationType != null)) return null;
   return client?.reseller ?? client?.user?.resellerInfo ?? null;
 }

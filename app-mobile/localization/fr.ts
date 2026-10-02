@@ -720,6 +720,15 @@ export const fr = {
   // Le serveur n'a jamais communiqué de volume : le dire franchement, plutôt
   // que d'afficher « 0 o » qui se lirait comme « rien consommé ».
   quota_not_measured: 'Non mesuré',
+  allocation_summary_title: 'MES DONNÉES',
+  allocation_unlimited: 'Sans limite',
+  allocation_available_synced: 'Disponibles au total, à la dernière synchronisation',
+  allocation_sold_total: 'Vendus :',
+  allocation_trial_total: 'Essais gratuits :',
+  allocation_separate_usage_hint: 'Chaque connexion consomme uniquement son propre forfait. Les revendeurs et les essais gardent des compteurs séparés.',
+  allocation_trial_origin: 'Essai gratuit offert par la plateforme',
+  allocation_sold_origin: 'Allocation vendue par {owner}',
+  allocation_platform: 'la plateforme',
 
   // ── Carte « Période d'essai » (accueil) ────────────────────────────────────
   // Visible uniquement quand l'accès actif PROVIENT d'un essai gratuit déployé.

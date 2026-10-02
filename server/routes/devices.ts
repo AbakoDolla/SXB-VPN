@@ -7,11 +7,12 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from "../middlew
 import { sanitizeDevice, selectDeviceSubscription } from "../services/device-quota";
 import { marquesEssaiParClient, etFiltres, exclureIdentifiants, inclutEssaisGratuits, porteeEssaiDeploye } from "../services/free-trial-marks";
 import { gestionnaireAInscrire, porteeClients, possedeClientCloisonne } from "../services/portee-donnees";
-import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
+import { executerMutationQuota, PlafondQuotaDepasse, SharedAllocationAccount } from "../services/reseller-quota";
 import { synchroniserEtatAccesClient } from "../services/client-access-state";
 import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
 import { assertResumeAllowed, deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
 import { accessStateHub } from "../services/access-state-events";
+import { resellerClientAllocationView, resellerTrafficAllocationScope } from "../services/data-allocation";
 import { estContrainteUniqueDeviceClient, normaliserDeviceIdClient } from "../services/vpn-client-device-scope";
 import {
   chargerFicheRevendeur,
@@ -86,7 +87,7 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
     const fiche = isReseller ? await chargerFicheRevendeur(prisma, req.user?.userId) : null;
     const avecEssais = inclutEssaisGratuits(req.query.includeFreeTrial);
     const porteeEssai = avecEssais ? null : await porteeEssaiDeploye(prisma);
-    const clients = await prisma.vpnClient.findMany({
+    const loadedClients = await prisma.vpnClient.findMany({
       where: etFiltres(
         await porteeClients(prisma, req.user),
         porteeEssai ? exclureIdentifiants("id", porteeEssai.clientsEssaiUniquement) : null,
@@ -102,7 +103,7 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
           // c'est exactement le cas du forfait d'essai. Sans ce retranchement,
           // un compte converti afficherait encore « Essai gratuit — … », son
           // volume et son échéance alors que les essais sont masqués.
-          where: etFiltres(
+          where: isReseller ? undefined : etFiltres(
             { status: { not: "revoked" } },
             porteeEssai ? exclureIdentifiants("id", porteeEssai.subscriptionIds) : null,
           ) as any,
@@ -111,6 +112,10 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
         },
       },
       orderBy: { createdAt: "desc" },
+    });
+    const clients = loadedClients.map(client => {
+      const projected = resellerClientAllocationView(client, fiche);
+      return { ...projected, subscriptions: projected.subscriptions?.filter(row => row.status !== "revoked") };
     });
     const ids = clients.map((client) => client.id);
     // Mention « période d'essai » — UNIQUEMENT quand les essais sont
@@ -131,7 +136,7 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       : new Map<string, any>();
     const usageRows = ids.length
       ? await (prisma as any).trafficUsage.findMany({
-          where: { clientId: { in: ids } },
+          where: { clientId: { in: ids }, ...(isReseller ? await resellerTrafficAllocationScope(prisma, fiche) : {}) },
           select: { clientId: true, accountId: true, deviceId: true, download: true, upload: true, timestamp: true },
           orderBy: { timestamp: "desc" },
         })
@@ -467,6 +472,7 @@ router.post(
       if (err instanceof PlafondQuotaDepasse) {
         return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
       }
+      if (err instanceof SharedAllocationAccount) return res.status(409).json(err.body);
       console.error("Revoke device error:", err);
       return res.status(500).json({ error: "Server error" });
     }
@@ -506,6 +512,7 @@ router.post(
     } catch (error) {
       if (error instanceof MobileAccessError) return res.status(error.status).json(error.body);
       if (error instanceof PlafondQuotaDepasse) return res.status(409).json(reponsePlafondDepasse(error.alloue, error.plafond));
+      if (error instanceof SharedAllocationAccount) return res.status(409).json(error.body);
       console.error("Resume device error:", error);
       return res.status(500).json({ error: "Server error" });
     }
@@ -569,6 +576,7 @@ router.post(
       if (err instanceof PlafondQuotaDepasse) {
         return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
       }
+      if (err instanceof SharedAllocationAccount) return res.status(409).json(err.body);
       console.error("Renew device error:", err);
       return res.status(500).json({ error: "Server error" });
     }

@@ -12,6 +12,29 @@ export type AccountStateStatus =
   | 'suspended'
   | 'revoked';
 
+export interface DataAllocationSummary {
+  soldBytes: string;
+  freeTrialBytes: string;
+  allocatedBytes: string;
+  usedBytes: string;
+  remainingBytes: string | null;
+  unlimited: boolean;
+}
+
+export interface DataAllocationMetadata {
+  id: string;
+  userId: string | null;
+  ownerId: string | null;
+  ownerName: string | null;
+  resellerId: string | null;
+  type: 'sold' | 'free_trial';
+  allocatedBytes: string;
+  usedBytes: string;
+  remainingBytes: string | null;
+  profileId: string;
+  createdAt: string;
+}
+
 export interface AccountState {
   state: AccountStateStatus;
   quotaTotalGb: number;
@@ -23,6 +46,7 @@ export interface AccountState {
   subscription?: { id: string; status?: string } | null;
   expireAt: string | null;
   deviceLimit: number;
+  allocationSummary?: DataAllocationSummary;
 }
 
 export interface ActivateAccountResponse {
@@ -53,6 +77,7 @@ export interface VpnConfigResponse {
 
 // ── VPN Connections (GET /api/mobile/connections) ─────────────────────────────
 export interface VpnConnection {
+  allocation?: DataAllocationMetadata;
   sshRelayAvailable?: boolean;
   sshDirectAvailable?: boolean;
   id: string;
@@ -93,6 +118,7 @@ export interface VpnConnection {
 
 export interface ConnectionsResponse {
   connections: VpnConnection[];
+  allocationSummary?: DataAllocationSummary;
 }
 
 export interface HistoryItem {

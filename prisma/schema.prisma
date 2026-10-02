@@ -217,6 +217,11 @@ model DataAddition {
   clientName       String
   actorUserId      String?
   actorName        String
+  allocationUserId     String?
+  allocationOwnerId    String?
+  allocationOwnerName  String?
+  allocationResellerId String?
+  allocationType       String?
   /// `creation` : volume initial d'un forfait ; `ajout` : hausse d'un forfait existant.
   kind             String
   addedBytes       BigInt
@@ -585,6 +590,13 @@ model Subscription {
   deviceId          String?
   revokeReason      String?
   createdBy         String?
+  // Immutable funding identity; the account's current reseller is not the seller.
+  allocationUserId     String?
+  allocationOwnerId    String?
+  allocationOwnerName  String?
+  allocationResellerId String?
+  allocationType       String?
+  allocationOrigin     String?
   /// Demande d'essai gratuit qui a fait naître ce forfait ; `null` pour tout
   /// forfait ordinaire.
   ///
@@ -605,6 +617,8 @@ model Subscription {
   devices           SubscriptionDevice[]
 
   @@index([freeTrialRequestId])
+  @@index([allocationResellerId, allocationType, createdAt])
+  @@index([allocationUserId, allocationType])
   @@map("subscriptions")
 }
 

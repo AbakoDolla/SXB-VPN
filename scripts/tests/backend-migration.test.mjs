@@ -29,6 +29,7 @@ await require("esbuild").build({
 const { BACKEND_SCHEMA, BACKEND_MIGRATIONS, checkBackendSchema, prepareBackendMigration } = require(bundle);
 const fixture = path.join(scratch, "source");
 for (const file of [BACKEND_SCHEMA, "prisma/schema.prisma", "prisma/security-layer.sql",
+  "prisma/migrations/20261002043000_data_allocation_ownership/migration.sql",
   ...BACKEND_MIGRATIONS.map(item => item.file)]) {
   await mkdir(path.dirname(path.join(fixture, file)), { recursive: true });
   await copyFile(path.join(root, file), path.join(fixture, file));
@@ -44,7 +45,7 @@ const options = {
 };
 let calls, fail, drift, ledger;
 beforeEach(() => {
-  calls = []; fail = null; drift = false; ledger = "1|1\n";
+  calls = []; fail = null; drift = false; ledger = "1|1|1|1\n";
   globalThis.__sxbMigrationSpawn = (command, args, options) => {
     const call = { command, args, options };
     calls.push(call);
@@ -104,7 +105,7 @@ test("backup is verified before every explicit migration; real schema comparison
       assert.match(source, /^COMMIT;\s*$/m);
     }
   }
-  assert.equal(BACKEND_MIGRATIONS.at(-1).file, "backend/prisma/security-layer.sql");
+  assert.equal(BACKEND_MIGRATIONS.at(-1).file, "backend/prisma/migrations/20261002043000_data_allocation_ownership/migration.sql");
   assert.deepEqual(calls.at(-2).args.slice(1), [
     "migrate", "diff", "--from-schema-datasource", path.join(fixture, BACKEND_SCHEMA),
     "--to-schema-datamodel", path.join(fixture, BACKEND_SCHEMA), "--exit-code",
@@ -158,6 +159,8 @@ test("post-migration schema errors and missing ledger protections block readines
   await assert.rejects(checkBackendSchema(options), code("BACKEND_TOOL_FAILED"));
   fail = null; ledger = "0|1\n";
   await assert.rejects(checkBackendSchema(options), code("BACKEND_LEDGER_PROTECTION_MISSING"));
+  ledger = "1|1|0|1\n";
+  await assert.rejects(checkBackendSchema(options), code("BACKEND_ALLOCATION_PROTECTION_MISSING"));
 });
 
 test("missing DDL, non-public schemas, duplicate and unsupported parameters fail before backup", async () => {

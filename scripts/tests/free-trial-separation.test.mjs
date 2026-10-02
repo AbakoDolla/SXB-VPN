@@ -299,7 +299,7 @@ test("cloisonnement revendeur inchangé : ses propres clients, essais compris, n
     const forfaits = await api("r1", "GET", `/subscriptions?includeFreeTrial=${inclure}`);
     ok(forfaits);
     const vendus = new Set(forfaits.body.subscriptions.map(ligne => ligne.id));
-    assert.equal(vendus.has(demande.subscriptionId), inclure === "true");
+    assert.equal(vendus.has(demande.subscriptionId), false, "l'essai du systeme n'est jamais une vente du revendeur");
     for (const forfait of forfaits.body.subscriptions) {
       assert.equal(forfait.client.resellerId, "res-r1", "un forfait d'un autre revendeur a fui");
     }

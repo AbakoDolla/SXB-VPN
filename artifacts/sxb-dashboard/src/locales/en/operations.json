@@ -368,7 +368,7 @@
     "profileHint": "Selective profile deletion always requires each profile's current unlock grant, even for the owner. Linked plans or engine conflicts block deletion; there is no automatic cascade and device activation is not disabled.",
     "clientHint": "Delete only these VPN licences and their associated access data, not the holders' login accounts. Resellers can select only licences they own.",
     "accountHint": "OWNER, ADMIN and SUPER_ADMIN login accounts, and your own account, are never selected or deleted by this operation. Reseller and support accounts must be chosen explicitly; no automatic cleanup runs.",
-    "subscriptionHint": "Delete these data plans, separately from adding data or extending validity. Device activation stays intact. Resellers can select only their own clients' plans.",
+    "subscriptionHint": "Delete these data plans, separately from adding data or extending validity. Device activation stays intact. Resellers can select only the allocations they funded, even if another reseller manages the account.",
     "profilePage": "{{count}} filtered profiles. At most {{limit}} profile cards are displayed per page."
   },
   "common": {

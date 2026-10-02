@@ -16,6 +16,7 @@
  */
 
 import { journaliserAjouts } from "./data-additions";
+import { dataAllocationOwner, dataAllocationScope, dataAllocationType, ownsDataAllocation, withDataAllocationIdentity } from "./data-allocation";
 
 export const QUOTA_ILLIMITE = BigInt(-1);
 
@@ -48,6 +49,12 @@ export class PlafondQuotaDepasse extends Error {
 
 export class AccesHistoriqueQuotaRefuse extends Error {
   readonly code = "RESELLER_QUOTA_HISTORY_FORBIDDEN";
+}
+
+export class SharedAllocationAccount extends Error {
+  readonly code = 'SHARED_ALLOCATION_ACCOUNT';
+  constructor() { super('Ce compte porte des allocations d’autres propriétaires. Modifiez uniquement vos forfaits, ou contactez l’administration.'); }
+  get body() { return { error: 'errors.shared_allocation_account', code: this.code, message: this.message }; }
 }
 
 /** Un plafond négatif signifie « illimité » ; 0 signifie « rien à distribuer ». */
@@ -89,7 +96,8 @@ export async function calculerAllocation(
       quotaTotal: true,
       quotaUsed: true,
       subscriptions: {
-        select: { id: true, quotaBytes: true, quotaUsed: true, status: true, expireAt: true },
+        select: { id: true, quotaBytes: true, quotaUsed: true, status: true, expireAt: true,
+          allocationType: true, allocationResellerId: true, freeTrialRequestId: true },
       },
       tokens: {
         select: { quota: true, status: true, expiration: true },
@@ -110,6 +118,19 @@ export async function calculerAllocation(
 
   let alloue = BigInt(0);
   let consomme = BigInt(0);
+  const merchant = typeof proprietaire === "string"
+    ? await prisma.reseller?.findUnique?.({ where: { userId: proprietaire }, select: { id: true, userId: true } })
+    : proprietaire;
+  const owned = new Map<string, any>();
+  if (prisma.subscription?.findMany && merchant) {
+    const subscriptions = await prisma.subscription.findMany({
+      where: dataAllocationScope(merchant),
+      select: { id: true, quotaBytes: true, quotaUsed: true, status: true, expireAt: true,
+        allocationType: true, allocationResellerId: true, freeTrialRequestId: true,
+        client: { select: { status: true, resellerId: true, userId: true } } },
+    });
+    for (const sub of subscriptions) if (ownsDataAllocation(sub, merchant)) owned.set(sub.id, sub);
+  }
   for (const voucher of vouchers) alloue += BigInt(voucher.quota ?? 0);
   for (const client of clients) {
     if (options.exclureClientId && client.id === options.exclureClientId) continue;
@@ -132,26 +153,26 @@ export async function calculerAllocation(
       }
     }
 
-    const forfaits = tousLesForfaits.filter((s: any) => {
-      if (s.id === options.exclureSubscriptionId) return false;
-      if (["revoked", "suspended", "expired"].includes(String(s.status))) return false;
-      const echeance = s.expireAt ? new Date(s.expireAt).getTime() : null;
-      return echeance === null || Number.isNaN(echeance) || echeance >= maintenant;
-    });
-    if (tousLesForfaits.length > 0) {
-      for (const forfait of tousLesForfaits) {
-        consomme += BigInt(forfait.quotaUsed ?? 0);
-      }
-      if (!clientActif) continue;
-      for (const forfait of forfaits) {
-        alloue += BigInt(forfait.quotaBytes ?? 0);
-      }
-    } else {
-      consomme += BigInt(client.quotaUsed ?? 0);
+    const ownSubscriptions = tousLesForfaits.filter((sub: any) =>
+      dataAllocationType(sub) === 'sold' && (sub.allocationType == null || merchant && ownsDataAllocation({ ...sub, client }, merchant)));
+    for (const sub of ownSubscriptions) if (!owned.has(sub.id)) owned.set(sub.id, { ...sub, client: { status: client.status } });
+    // A system trial or another merchant's sale never replaces a legacy account credit.
+    if (ownSubscriptions.length === 0) {
+      const attributedUsage = tousLesForfaits.reduce((sum: bigint, sub: any) => sum + BigInt(sub.quotaUsed ?? 0), 0n);
+      const legacyUsage = BigInt(client.quotaUsed ?? 0) - attributedUsage;
+      consomme += legacyUsage > 0n ? legacyUsage : 0n;
       if (clientActif && (echeanceClient === null || Number.isNaN(echeanceClient) || echeanceClient > maintenant)) {
         alloue += BigInt(client.quotaTotal ?? 0);
       }
     }
+  }
+  for (const sub of owned.values()) {
+    consomme += BigInt(sub.quotaUsed ?? 0);
+    if (sub.id === options.exclureSubscriptionId ||
+        ["revoked", "suspended", "expired"].includes(String(sub.status)) ||
+        (sub.allocationType == null && ["suspended", "revoked", "expired", "disabled"].includes(String(sub.client?.status))) ||
+        sub.expireAt && new Date(sub.expireAt).getTime() <= Date.now()) continue;
+    alloue += BigInt(sub.quotaBytes ?? 0);
   }
   return { alloue, consomme };
 }
@@ -206,6 +227,42 @@ async function ajouterMouvement(tx: any, data: {
   });
 }
 
+/** Correct materialized reservations after the backed-up ownership migration, with an immutable receipt. */
+export async function reconcilierAllocationsRevendeurs(db: any) {
+  const merchants = await db.reseller.findMany({ select: { id: true, userId: true }, orderBy: { id: 'asc' } });
+  let corrected = 0;
+  for (const merchant of merchants) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const changed = await db.$transaction(async (tx: any) => {
+          await verrouillerRevendeur(tx, merchant.userId);
+          const current = await tx.reseller.findUnique({ where: { id: merchant.id }, include: { user: true } });
+          if (!current) throw new Error('ALLOCATION_OWNER_REQUIRED');
+          const allocation = await calculerAllocation(tx, current);
+          const previous = BigInt(current.quotaUsedBytes ?? 0);
+          if (previous === allocation.alloue) return false;
+          await tx.reseller.update({ where: { id: current.id }, data: { quotaUsedBytes: allocation.alloue } });
+          await ajouterMouvement(tx, {
+            fiche: current, auteur: { name: 'Systeme' },
+            kind: allocation.alloue > previous ? 'QUOTA_COMMITMENT' : 'QUOTA_RELEASE',
+            reason: 'Correction des reservations apres isolation des allocations',
+            deltaBytes: allocation.alloue - previous,
+            quotaBeforeBytes: BigInt(current.quotaBytes), quotaAfterBytes: BigInt(current.quotaBytes),
+            allocatedBeforeBytes: previous, allocatedAfterBytes: allocation.alloue,
+            referenceType: 'allocation_ownership_migration', referenceId: '20261002043000',
+          });
+          return true;
+        }, { isolationLevel: 'Serializable' });
+        if (changed) corrected++;
+        break;
+      } catch (error) {
+        if (attempt >= 2 || !(error instanceof Error) || !('code' in error) || error.code !== 'P2034') throw error;
+      }
+    }
+  }
+  return { examined: merchants.length, corrected };
+}
+
 /**
  * Execute une mutation qui peut changer l'engagement d'un revendeur.
  * Mutation, controle, compteur materialise et audit partagent une transaction.
@@ -223,19 +280,35 @@ export async function executerMutationQuota<T>(
   },
   mutation: (tx: any) => Promise<T>
 ): Promise<T> {
-  return db.$transaction(async (tx: any) => {
+  const transaction = () => db.$transaction(async (tx: any) => {
     // Chaque Go ajouté à un forfait dans cette transaction devient une ligne
     // « Données ajoutées », écrite atomiquement avec la mutation elle-même.
+    let identity = {
+      resellerId: params.resellerId ?? null,
+      resellerUserId: params.resellerUserId ?? null,
+    };
+    if (params.referenceType === 'subscription' && params.referenceId) {
+      const row = await tx.subscription.findUnique({
+        where: { id: params.referenceId }, include: { client: { select: { userId: true, resellerId: true } } },
+      });
+      if (row?.allocationType != null || row?.freeTrialRequestId) {
+        const owner = dataAllocationOwner(row);
+        identity = { resellerId: owner.resellerId, resellerUserId: null };
+      }
+    }
     const journal = journaliserAjouts(tx, { auteur: params.auteur });
+    const runMutation = (resellerId: string | null) => mutation(withDataAllocationIdentity(journal.tx, {
+      resellerId, actorUserId: params.auteur.userId, actorName: params.auteur.name || params.auteur.email,
+    }));
     const executerSansPlafond = async () => {
-      const resultatDirect = await mutation(journal.tx);
+      const resultatDirect = await runMutation(null);
       await journal.consigner();
       return resultatDirect;
     };
-    const identite = params.resellerId
-      ? { id: params.resellerId }
-      : params.resellerUserId
-        ? { userId: params.resellerUserId }
+    const identite = identity.resellerId
+      ? { id: identity.resellerId }
+      : identity.resellerUserId
+        ? { userId: identity.resellerUserId }
         : null;
     if (!identite) return executerSansPlafond();
 
@@ -243,16 +316,29 @@ export async function executerMutationQuota<T>(
       where: identite,
       include: { user: true },
     });
-    if (!fiche) return executerSansPlafond();
+    if (!fiche) {
+      if (identity.resellerId) throw new Error('ALLOCATION_OWNER_REQUIRED');
+      return executerSansPlafond();
+    }
 
     await verrouillerRevendeur(tx, fiche.userId);
     fiche = await tx.reseller.findUnique({
       where: { id: fiche.id },
       include: { user: true },
     });
+    if (params.referenceType === 'vpn_client' && params.referenceId &&
+        params.auteur.userId === fiche.userId) {
+      const foreign = await tx.subscription.findFirst({
+        where: { clientId: params.referenceId, allocationType: { not: null }, OR: [
+          { allocationType: 'free_trial' }, { allocationResellerId: { not: fiche.id } }, { allocationResellerId: null },
+        ] },
+        select: { id: true },
+      });
+      if (foreign) throw new SharedAllocationAccount();
+    }
 
     const avant = await calculerAllocation(tx, fiche);
-    const resultat = await mutation(journal.tx);
+    const resultat = await runMutation(fiche.id);
     const apres = await calculerAllocation(tx, fiche);
     const plafond = BigInt(fiche.quotaBytes ?? 0);
     const reductionAutorisee =
@@ -287,6 +373,13 @@ export async function executerMutationQuota<T>(
     await journal.consigner();
     return resultat;
   }, { isolationLevel: "Serializable" });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await transaction();
+    } catch (error) {
+      if (attempt >= 2 || !(error instanceof Error) || !('code' in error) || error.code !== 'P2034') throw error;
+    }
+  }
 }
 
 /** Modifie un plafond et ecrit le mouvement correspondant atomiquement. */

@@ -1,6 +1,7 @@
 import { useTranslation } from '../contexts/I18nContext';
 import { isAdmin as isAdminRole, isReseller as isResellerRole } from '../lib/roles';
 import React, { useEffect, useState, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuotaPolling } from '../hooks/useQuotaPolling';
 import { UserRole } from '../types';
 import {
@@ -45,7 +46,7 @@ function fmtDate(d: string | null, locale: string) {
 }
 
 const DEFAULT_FORM = {
-  clientId: '', profileId: '', name: '', quotaGB: 5, durationDays: 30, deviceLimit: 1,
+  clientId: '', recipientToken: '', profileId: '', name: '', quotaGB: 5, durationDays: 30, deviceLimit: 1,
 };
 
 // ── Opérations groupées ──────────────────────────────────────────────────────
@@ -113,6 +114,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   // Modal
   const [showModal, setShowModal] = useState(false);
   const [editSub, setEditSub] = useState<Subscription | null>(null);
+  const [recipientKind, setRecipientKind] = useState<'list' | 'code'>('list');
   const [form, setForm] = useState({ ...DEFAULT_FORM });
   const saving = pending === 'save';
   const [formError, setFormError] = useState<unknown>(null);
@@ -220,7 +222,8 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   }).sort((a, b) => comparerForfaitsParClient(a, b, nomClient)), [subs, search, statusFilter, clientMap]);
 
   const ownsSubscription = (sub: Subscription) => !isReseller || !!access?.resellerId
-    && (sub.resellerId ?? sub.client?.resellerId ?? clients.find(client => client.id === sub.clientId)?.resellerId) === access.resellerId;
+    && (sub.allocation ? sub.allocation.type === 'sold' && sub.allocation.resellerId === access.resellerId
+      : (sub.resellerId ?? sub.client?.resellerId ?? clients.find(client => client.id === sub.clientId)?.resellerId) === access.resellerId);
   const bulkDelete = useBulkDelete({
     items: subs, filtered, selected, setSelected, label: sub => sub.name || sub.id,
     eligible: ownsSubscription, canDelete: canReduce, canSelect: canAssign,
@@ -256,6 +259,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
   const openCreate = () => {
     setEditSub(null);
+    setRecipientKind('list');
     setForm({ ...DEFAULT_FORM });
     setFormError('');
     setShowModal(true);
@@ -265,6 +269,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     setEditSub(sub);
     setForm({
       clientId: sub.clientId,
+      recipientToken: '',
       profileId: sub.profileId,
       name: sub.name,
       quotaGB: bytesToGigabytes(sub.quotaBytes) || 5,
@@ -279,7 +284,9 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     e.preventDefault();
     if (bulkDelete.isDeleting()) { setFormError('commerce.common.actionPending'); return; }
     if (!canCreate) { setFormError('commerce.common.unavailableAccess'); return; }
-    if (!form.clientId || !form.profileId) { setFormError('commerce.subscriptions.required'); return; }
+    if ((!editSub && recipientKind === 'code' ? !form.recipientToken.trim() : !form.clientId) || !form.profileId) {
+      setFormError('commerce.subscriptions.required'); return;
+    }
     setFormError('');
     try {
       await run('save', async () => {
@@ -294,15 +301,25 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
           });
           toast.success(message('commerce.subscriptions.updated'));
         } else {
-          await createSubscription(form);
+          const { recipientToken, ...values } = form;
+          await createSubscription(recipientKind === 'code'
+            ? { ...values, clientId: undefined, recipientToken: recipientToken.trim() } : values);
           toast.success(message('commerce.subscriptions.created'));
         }
         setShowModal(false);
+        setForm({ ...DEFAULT_FORM });
         await Promise.all([load(), refreshAccess()]);
       });
     } catch (err) {
       setFormError(err);
     }
+  };
+
+  const closeModal = () => {
+    setShowModal(false);
+    setForm({ ...DEFAULT_FORM });
+    setRecipientKind('list');
+    setFormError(null);
   };
 
   const handleToggleStatus = async (sub: Subscription) => {
@@ -940,6 +957,12 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                         </td>
                         <td className="px-4 py-3">
                           <p className="text-white font-medium">{sub.name}</p>
+                          {sub.allocation && (
+                            <p className="text-xs text-gray-400">
+                              {t(sub.allocation.type === 'sold' ? 'commerce.subscriptions.soldAllocation' : 'commerce.subscriptions.trialAllocation')}
+                              {' · '}{fmtDate(sub.allocation.createdAt, locale)}
+                            </p>
+                          )}
                           <p className="text-xs text-gray-600 font-mono">{sub.dataToken}</p>
                         </td>
                         <td className="px-4 py-3">
@@ -950,7 +973,8 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                           <td className="px-4 py-3">
                             <span className="inline-flex items-center gap-1 rounded-md border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300">
                               <Store className="w-3 h-3 shrink-0" />
-                              {ownerLabel(sub.resellerName ?? sub.client?.reseller?.name ?? client?.resellerName ?? null)}
+                              {sub.allocation ? sub.allocation.ownerName || t('commerce.subscriptions.systemOwner')
+                                : ownerLabel(sub.resellerName ?? sub.client?.reseller?.name ?? client?.resellerName ?? null)}
                             </span>
                           </td>
                         )}
@@ -976,6 +1000,11 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                             du volume engagé qui décompte le plafond du revendeur. */}
                         <td className="px-4 py-3">
                           <p className="text-xs text-white">{t('commerce.subscriptions.consumed', { value: formatBytes(String(sub.quotaUsed ?? 0)) })}</p>
+                          {sub.allocation && (
+                            <p className="text-xs text-gray-300">{t('commerce.subscriptions.allocationRemaining', {
+                              value: sub.allocation.remainingBytes === null ? t('commerce.common.unlimited') : formatBytes(sub.allocation.remainingBytes),
+                            })}</p>
+                          )}
                           <p className="text-[11px] text-gray-500">
                             {t('commerce.subscriptions.percentUsed', { value: formatNumber(pct / 100, { style: 'percent', maximumFractionDigits: 0 }) })}
                           </p>
@@ -1072,15 +1101,17 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       />}
 
       {/* Create / Edit Modal */}
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-lg bg-[#0f1218] border border-[#1a1f2e] rounded-2xl shadow-2xl">
+      {showModal && createPortal(
+        <div role="dialog" aria-modal="true" aria-labelledby="allocation-dialog-title"
+          onKeyDown={event => { if (event.key === 'Escape' && !saving) closeModal(); }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+          <div className="w-full max-w-lg max-h-[85dvh] overflow-y-auto bg-[var(--sxb-surface-solid)] border border-[#1a1f2e] rounded-2xl shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-[#1a1f2e]">
-              <h2 className="text-white font-semibold flex items-center gap-2">
+              <h2 id="allocation-dialog-title" className="text-white font-semibold flex items-center gap-2">
                 <PackageOpen className="w-4 h-4 text-cyan-400" />
                 {editSub ? t('commerce.subscriptions.edit') : t('commerce.subscriptions.assignClient')}
               </h2>
-              <button onClick={() => setShowModal(false)} disabled={saving} aria-label={t('commerce.common.close')} className="p-1.5 text-gray-500 hover:text-white rounded-lg cursor-pointer disabled:opacity-40">
+              <button onClick={closeModal} disabled={saving} aria-label={t('commerce.common.close')} className="p-1.5 text-gray-500 hover:text-white rounded-lg cursor-pointer disabled:opacity-40">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -1099,10 +1130,47 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
               )}
               {editSub && <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-relaxed text-amber-200">{t('commerce.subscriptions.replaceHint')}</p>}
 
-              <div>
-                <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.common.vpnClientRequired')}</label>
+              {!editSub && (
+                <fieldset className="space-y-2">
+                  <legend className="text-sm text-gray-300 mb-2">{t('commerce.subscriptions.recipient')}</legend>
+                  <div className="flex flex-wrap gap-4 text-sm text-gray-300">
+                    <label className="flex items-center gap-2">
+                      <input type="radio" name="recipient-kind" checked={recipientKind === 'list'}
+                        onChange={() => setRecipientKind('list')} className="accent-cyan-500" />
+                      {t('commerce.subscriptions.recipientListed')}
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="radio" name="recipient-kind" checked={recipientKind === 'code'}
+                        onChange={() => setRecipientKind('code')} className="accent-cyan-500" />
+                      {t('commerce.subscriptions.recipientExisting')}
+                    </label>
+                  </div>
+                </fieldset>
+              )}
+              {!editSub && recipientKind === 'code' ? (
+                <div>
+                  <label htmlFor="allocation-recipient-token" className="block text-sm text-gray-300 mb-2">
+                    {t('commerce.subscriptions.recipientCode')}
+                  </label>
+                  <input id="allocation-recipient-token" type="password" required minLength={10} maxLength={255}
+                    autoComplete="off" spellCheck={false} value={form.recipientToken}
+                    onChange={e => setForm(previous => ({ ...previous, recipientToken: e.target.value }))}
+                    aria-describedby="allocation-recipient-hint"
+                    className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-base focus:outline-none focus:border-cyan-500" />
+                  <p id="allocation-recipient-hint" className="mt-2 text-sm leading-relaxed text-gray-400">
+                    {t('commerce.subscriptions.recipientCodeHint')}
+                  </p>
+                </div>
+              ) : editSub ? (
+                <div>
+                  <p className="text-xs text-gray-400 mb-1">{t('commerce.common.client')}</p>
+                  <p className="text-sm text-gray-200">{nomClient(editSub) || t('commerce.subscriptions.groupUnknownClient')}</p>
+                  <p className="mt-1 text-xs text-gray-400">{t('commerce.subscriptions.ownerImmutable')}</p>
+                </div>
+              ) : <div>
+                <label htmlFor="allocation-client" className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.common.vpnClientRequired')}</label>
                 <div className="relative">
-                  <select value={form.clientId} onChange={e => setForm(f => ({ ...f, clientId: e.target.value }))} required
+                  <select id="allocation-client" value={form.clientId} onChange={e => setForm(f => ({ ...f, clientId: e.target.value }))} required
                     disabled={!!editSub}
                     className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500 appearance-none cursor-pointer disabled:opacity-60">
                     <option value="">{t('commerce.common.chooseClient')}</option>
@@ -1120,12 +1188,12 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                     {t('commerce.subscriptions.noClients')}
                   </p>
                 )}
-              </div>
+              </div>}
 
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.subscriptions.configurationRequired')}</label>
+                <label htmlFor="allocation-profile" className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.subscriptions.configurationRequired')}</label>
                 <div className="relative">
-                  <select value={form.profileId} onChange={e => setForm(f => ({ ...f, profileId: e.target.value }))} required
+                  <select id="allocation-profile" value={form.profileId} onChange={e => setForm(f => ({ ...f, profileId: e.target.value }))} required
                     className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500 appearance-none cursor-pointer">
                     <option value="">{t('commerce.subscriptions.selectConfiguration')}</option>
                     {profiles.filter(p => !p.status || p.status === 'active').map(p => (
@@ -1144,35 +1212,35 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
               </div>
 
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.subscriptions.optionalName')}</label>
-                <input value={form.name} maxLength={160} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                <label htmlFor="allocation-name" className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.subscriptions.optionalName')}</label>
+                <input id="allocation-name" value={form.name} maxLength={160} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                   placeholder={t('commerce.subscriptions.autoName')}
                   className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500" />
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t(editSub ? 'commerce.subscriptions.replaceQuota' : 'commerce.common.quotaGbRequired')}</label>
-                  <input type="number" min={0.5} max={1_000_000} step={0.5} value={form.quotaGB}
+                  <label htmlFor="allocation-quota" className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t(editSub ? 'commerce.subscriptions.replaceQuota' : 'commerce.common.quotaGbRequired')}</label>
+                  <input id="allocation-quota" type="number" min={0.5} max={1_000_000} step={0.5} value={form.quotaGB}
                     onChange={e => setForm(f => ({ ...f, quotaGB: Number(e.target.value) }))} required
                     className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500" />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t(editSub ? 'commerce.subscriptions.replaceDuration' : 'commerce.common.durationDays')}</label>
-                  <input type="number" min={1} max={3650} step={1} value={form.durationDays}
+                  <label htmlFor="allocation-duration" className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t(editSub ? 'commerce.subscriptions.replaceDuration' : 'commerce.common.durationDays')}</label>
+                  <input id="allocation-duration" type="number" min={1} max={3650} step={1} value={form.durationDays}
                     onChange={e => setForm(f => ({ ...f, durationDays: Number(e.target.value) }))} required
                     className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500" />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.common.devices')}</label>
-                  <input type="number" min={1} max={10} value={form.deviceLimit}
+                  <label htmlFor="allocation-devices" className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.common.devices')}</label>
+                  <input id="allocation-devices" type="number" min={1} max={10} value={form.deviceLimit}
                     onChange={e => setForm(f => ({ ...f, deviceLimit: Number(e.target.value) }))}
                     className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500" />
                 </div>
               </div>
 
               <div className="flex gap-2 justify-end pt-4 border-t border-[#1a1f2e]">
-                <button type="button" onClick={() => setShowModal(false)}
+                <button type="button" onClick={closeModal}
                   className="px-4 py-2 text-sm text-gray-400 bg-[#0a0d14] border border-[#1a1f2e] rounded-xl hover:text-white transition-all cursor-pointer">
                   {t('commerce.common.cancel')}
                 </button>
@@ -1187,7 +1255,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             </form>
           </div>
         </div>
-      )}
+      , document.body)}
     </div>
   );
 }

@@ -32,6 +32,7 @@ export type SubscriptionAccessRecord = DatedAccess & {
   quotaBytes?: bigint | number | null;
   quotaUsed?: bigint | number | null;
   profile?: { status?: string } | null;
+  allocationFundingStatus?: string;
 };
 
 export function accessDateExpired(value: Date | string | null | undefined, now = Date.now()): boolean {
@@ -75,6 +76,8 @@ export function subscriptionAccessStatus(
 ): SubscriptionAccessStatus {
   if (!subscription || subscription.profile === null || subscription.status === "deleted") return "deleted";
   if (subscription.status === "revoked" || ["revoked", "archived"].includes(subscription.profile?.status ?? "")) return "revoked";
+  if (subscription.allocationFundingStatus === 'suspended') return 'suspended';
+  if (subscription.allocationFundingStatus === 'expired') return 'expired';
   if (subscription.status === "suspended" || (subscription.profile?.status && subscription.profile.status !== "active")) return "suspended";
   if (subscription.status === "expired" || accessDateExpired(subscription.expireAt, now)) return "expired";
   if (subscription.status === "exhausted" ||

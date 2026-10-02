@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser, isOwnerRequest } from "../middleware/rbac/owner";
-import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
+import { executerMutationQuota, PlafondQuotaDepasse, SharedAllocationAccount } from "../services/reseller-quota";
 import {
   dissocierAccesClient,
   synchroniserEtatAccesClient,
@@ -15,6 +15,7 @@ import { marquesEssaiParClient, etFiltres, exclureIdentifiants, inclutEssaisGrat
 import { gestionnaireAInscrire, porteeClients, possedeClientCloisonne } from "../services/portee-donnees";
 import { assertResumeAllowed, deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
 import { accessStateHub } from "../services/access-state-events";
+import { resellerClientAllocationView } from "../services/data-allocation";
 import {
   chercherConflitDeviceClient,
   estContrainteUniqueDeviceClient,
@@ -102,6 +103,7 @@ function sanitizeVpnClient(client: any, trial?: unknown) {
 
   return {
     ...client,
+    subscriptions: undefined,
     user,
     reseller,
     resellerId: client.resellerId ?? reseller?.id ?? null,
@@ -141,9 +143,11 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
           user: { include: { role: true } },
           // Jointure unique : l'étiquette revendeur sans requête par ligne.
           reseller: { include: { user: { select: { id: true, name: true, email: true } } } },
+          subscriptions: isReseller,
         },
         orderBy: { createdAt: "desc" },
       });
+      if (isReseller) clients = clients.map(client => resellerClientAllocationView(client, fiche));
     } else {
       clients = inMemoryDb.vpnClients.map((client) => {
         const u = inMemoryDb.users.find((user) => user.id === client.userId);
@@ -190,6 +194,7 @@ router.get("/:id", requireAuth, requirePermission("clients.view"), async (req: A
         include: {
           user: { include: { role: true } },
           reseller: { include: { user: { select: { id: true, name: true, email: true } } } },
+          subscriptions: req.user?.role === "RESELLER",
         },
       });
     } else {
@@ -215,7 +220,8 @@ router.get("/:id", requireAuth, requirePermission("clients.view"), async (req: A
       return res.status(404).json({ error: "errors.clients.not_found", message: "VPN client not found" });
     }
 
-    return res.json(sanitizeVpnClient(client));
+    const merchant = req.user?.role === "RESELLER" ? await chargerFicheRevendeur(prisma, req.user.userId) : null;
+    return res.json(sanitizeVpnClient(resellerClientAllocationView(client, merchant)));
   } catch (err) {
     console.error("Fetch VPN client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to fetch VPN client" });
@@ -555,6 +561,7 @@ router.patch(
     if (err instanceof PlafondQuotaDepasse) {
       return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
     }
+    if (err instanceof SharedAllocationAccount) return res.status(409).json(err.body);
     console.error("Update VPN client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to update VPN client" });
   }
@@ -614,6 +621,7 @@ router.post(
     await logDbActivity(req.user?.userId || null, `Suspended VPN Client: ${id}`, "warning", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
+    if (err instanceof SharedAllocationAccount) return res.status(409).json(err.body);
     if (err instanceof PlafondQuotaDepasse) {
       return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
     }
@@ -677,6 +685,7 @@ router.post(
     await logDbActivity(req.user?.userId || null, `Activated VPN Client: ${id}`, "success", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
+    if (err instanceof SharedAllocationAccount) return res.status(409).json(err.body);
     if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
     if (err instanceof PlafondQuotaDepasse) {
       return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
@@ -748,6 +757,7 @@ router.post(
     if (err instanceof PlafondQuotaDepasse) {
       return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
     }
+    if (err instanceof SharedAllocationAccount) return res.status(409).json(err.body);
     console.error("Renew VPN client error:", err);
     return res.status(500).json({ error: "errors.server" });
   }
@@ -780,11 +790,15 @@ router.post(
 
     let updated: any = null;
     if (prisma) {
-      updated = await prisma.vpnClient.update({
-        where: { id },
-        data: { token: newToken },
+      updated = await executerMutationQuota(prisma, {
+        resellerUserId: client.userId, resellerId: client.resellerId ?? null,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Renouvellement du code du client ${id}`, referenceType: "vpn_client", referenceId: id,
+        autoriserReductionAuDessusDuPlafond: true,
+      }, tx => tx.vpnClient.update({
+        where: { id }, data: { token: newToken },
         include: { user: true, reseller: { include: { user: true } } },
-      });
+      }));
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
       inMemoryDb.vpnClients[index].token = newToken;
@@ -796,6 +810,7 @@ router.post(
     await logDbActivity(req.user?.userId || null, `Replaced secure key token for Client ID: ${id}`, "info", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
+    if (err instanceof SharedAllocationAccount) return res.status(409).json(err.body);
     return res.status(500).json({ error: "errors.server" });
   }
 });
@@ -852,6 +867,7 @@ router.delete(
     await logDbActivity(req.user?.userId || null, `Deleted VPN Client account: ${id}`, "danger", req.ip);
     return res.json({ message: "VPN client account and credentials deleted successfully" });
   } catch (err) {
+    if (err instanceof SharedAllocationAccount) return res.status(409).json(err.body);
     console.error("Delete client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to delete client" });
   }

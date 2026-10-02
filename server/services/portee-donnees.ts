@@ -22,6 +22,7 @@ import { FURTIVITE_OWNER, OWNER_ROLE } from '../middleware/rbac/owner';
 import { chargerFicheRevendeur } from './reseller-access';
 import { porteeClientsRevendeur } from './reseller-state';
 import { nonOwnerAccountScope, ownerIds } from './owner-privacy';
+import { dataAllocationScope } from './data-allocation';
 
 export const ROLE_ADMIN = 'ADMIN';
 export const ROLE_SUPER_ADMIN = 'SUPER_ADMIN';
@@ -105,11 +106,30 @@ export async function porteeSousClient(
   return portee ? { [relation]: portee } : null;
 }
 
-/** Alias historique : la portée d'un forfait passe par son client. */
+/** Financial reads include a seller's allocations without granting account management. */
+export async function porteeClientsAllocations(
+  prisma: any, requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  if (requerant?.role !== ROLE_RESELLER) return porteeClients(prisma, requerant);
+  const merchant = await chargerFicheRevendeur(prisma, requerant.userId);
+  if (!merchant) return AUCUN_CLIENT;
+  return { AND: [
+    FURTIVITE_OWNER,
+    { OR: [porteeClientsRevendeur(merchant), { subscriptions: { some: dataAllocationScope(merchant) } }] },
+  ] };
+}
+
+/** A subscription follows its financial owner, not its customer's account manager. */
 export async function porteeClientsForfait(
   prisma: any,
   requerant: Requerant | null | undefined,
 ): Promise<Record<string, unknown> | null> {
+  if (requerant?.role === ROLE_RESELLER) {
+    return { AND: [
+      dataAllocationScope(await chargerFicheRevendeur(prisma, requerant.userId)),
+      { client: FURTIVITE_OWNER },
+    ] };
+  }
   return porteeSousClient(prisma, requerant);
 }
 
