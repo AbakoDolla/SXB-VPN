@@ -17,7 +17,7 @@ export function nativeCompatibilityHarnessSource() {
     'tunInbound', 'isLiteralIp', 'dnsAddressHost', 'applyDnsLoopGuard',
     'stripUnsupportedSingBoxVlessFields', 'convertXrayToSingBoxIfNeeded',
     'normalizeRawSingBoxCompatibility', 'buildRawSingBoxConfig',
-    'buildSingBoxConfig', 'profileDnsObject', 'defaultDnsObject',
+    'buildSingBoxConfig', 'connectionDnsChoice', 'applyConnectionDnsOverride', 'profileDnsObject', 'defaultDnsObject',
     'applyTransport', 'buildVlessOutbound', 'buildVmessOutbound', 'buildTrojanOutbound',
     'buildShadowsocksOutbound', 'buildWireGuardOutbound', 'buildTuicOutbound', 'buildTlsObj',
     'csvToJsonArray', 'buildTransportObj', 'buildWsTransport', 'buildGrpcTransport',

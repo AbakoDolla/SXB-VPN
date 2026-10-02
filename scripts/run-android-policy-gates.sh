@@ -73,6 +73,8 @@ node tests/run-device-security.cjs
 node tests/run-root-access.cjs
 node tests/run-stability-policy.cjs
 node tests/run-ssh-compatibility.cjs
+node tests/run-ssh-frame-throughput.cjs
+node tests/run-connection-dns.cjs
 node scripts/prepare-geosite.cjs
 node --experimental-strip-types ../scripts/tests/xray-runtime-fixture.mjs "$HARNESS/xray"
 go -C ../scripts/tests/singbox-engine-check test synthetic_endpoints.go synthetic_endpoints_test.go

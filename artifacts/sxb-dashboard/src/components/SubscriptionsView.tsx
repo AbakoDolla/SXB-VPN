@@ -22,6 +22,7 @@ import { canResumeSubscription, hasExpired, isPlanExhausted, lifecycleBadges, su
 import { useActionLock } from '../hooks/useActionLock';
 import { useBulkDelete } from '../hooks/useBulkDelete';
 import { comparerForfaitsParClient } from '../lib/planOrder';
+import { summarizeVisibleAllocations } from '../lib/allocationSummary';
 import BulkDeleteControls from './BulkDeleteControls';
 import SubscriptionAdjustmentDialog, { SubscriptionAdjustment } from './SubscriptionAdjustmentDialog';
 import {
@@ -251,6 +252,15 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     const compte = new Map<string, number>();
     filtered.forEach(s => compte.set(s.clientId, (compte.get(s.clientId) ?? 0) + 1));
     return compte;
+  }, [filtered]);
+  const totauxParClient = useMemo(() => {
+    const groups = new Map<string, Subscription[]>();
+    for (const subscription of filtered) {
+      const rows = groups.get(subscription.clientId) ?? [];
+      rows.push(subscription);
+      groups.set(subscription.clientId, rows);
+    }
+    return new Map([...groups].map(([clientId, rows]) => [clientId, summarizeVisibleAllocations(rows)]));
   }, [filtered]);
 
   // Reset page when filter changes
@@ -913,6 +923,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                     const groupeCoche = eligiblesGroupe.length > 0
                       && eligiblesGroupe.every(s => selection.has(s.id));
                     const nomGroupe = nomClient(sub) || t('commerce.subscriptions.groupUnknownClient');
+                    const totalGroupe = totauxParClient.get(sub.clientId);
                     return (
                       <React.Fragment key={sub.id}>
                         {debutGroupe && (
@@ -941,6 +952,15 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                                   <span className="text-[11px] text-gray-500">{t('commerce.subscriptions.groupContinued')}</span>
                                 )}
                               </div>
+                              {totalGroupe && (
+                                <p className="mt-2 text-sm leading-relaxed text-gray-300">
+                                  {t('commerce.subscriptions.visibleAllocationTotals', {
+                                    allocated: totalGroupe.unlimited ? t('commerce.common.unlimited') : formatBytes(totalGroupe.allocated.toString()),
+                                    used: formatBytes(totalGroupe.used.toString()),
+                                    remaining: totalGroupe.remaining === null ? t('commerce.common.unlimited') : formatBytes(totalGroupe.remaining.toString()),
+                                  })}
+                                </p>
+                              )}
                             </td>
                           </tr>
                         )}

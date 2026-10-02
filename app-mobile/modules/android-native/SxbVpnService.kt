@@ -382,34 +382,75 @@ private fun readSshPayloadChain(
     }
 }
 
+private object SxbSshIoPolicy {
+    const val RELAY_BUFFER_BYTES = 32 * 1024
+    const val MAX_CHANNEL_INPUT_BUFFER_BYTES = 256 * 1024
+    const val FRAME_BUFFER_BYTES = 64 * 1024 + 14
+    const val MAX_DATA_FRAME_TRACES = 2
+
+    fun prepareTransport(socket: Socket) {
+        socket.tcpNoDelay = true
+    }
+
+    fun transportInput(socket: Socket): InputStream =
+        java.io.BufferedInputStream(socket.getInputStream(), RELAY_BUFFER_BYTES)
+
+    fun configureSession(session: Session) {
+        // JSch starts at 32 KiB and grows only when needed, up to this bound.
+        session.setConfig("max_input_buffer_size", MAX_CHANNEL_INPUT_BUFFER_BYTES.toString())
+    }
+}
+
 // ── WsOutputStream — Encode chaque write() en frame WebSocket binaire (client→server, masqué) ──
 private class WsOutputStream(
     private val raw: OutputStream,
     private val onEvent: (String) -> Unit = {},
 ) : OutputStream() {
     private val rng = SecureRandom()
+    private val mask = ByteArray(4)
+    private val frameBuffer = ByteArray(SxbSshIoPolicy.FRAME_BUFFER_BYTES)
+    private var tracedDataFrames = 0
 
     override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
     override fun write(b: ByteArray) = write(b, 0, b.size)
     override fun write(b: ByteArray, off: Int, len: Int) {
+        if (off < 0 || len < 0 || off > b.size - len) throw IndexOutOfBoundsException()
         if (len == 0) return
-        val mask = ByteArray(4).also { rng.nextBytes(it) }
-        val masked = ByteArray(len) { i -> (b[off + i].toInt() xor mask[i % 4].toInt()).toByte() }
-        // Diagnostic sans contenu : un payload ou une bannière peut contenir des secrets.
-        onEvent("[SXB_TRACE] stage=WS_FRAME_OUT fin=true opcode=2 masked=true payload_bytes=$len")
-        val buf = ByteArrayOutputStream(len + 14)
-        buf.write(0x82)                         // FIN=1, opcode=0x02 (binary)
-        when {
-            len < 126    -> { buf.write(0x80 or len) }
-            len < 65536  -> { buf.write(0x80 or 126); buf.write(len shr 8); buf.write(len and 0xFF) }
-            else         -> {
-                buf.write(0x80 or 127)
-                for (i in 7 downTo 0) buf.write((len.toLong() shr (i * 8)).toInt() and 0xFF)
+        var traceFrame = false
+        synchronized(raw) {
+            rng.nextBytes(mask)
+            val headerBytes = when {
+                len < 126 -> 2
+                len < 65536 -> 4
+                else -> 10
+            }
+            val frameBytes = Math.addExact(len, headerBytes + 4)
+            val frame = if (frameBytes <= frameBuffer.size) frameBuffer else ByteArray(frameBytes)
+            frame[0] = 0x82.toByte()
+            when (headerBytes) {
+                2 -> frame[1] = (0x80 or len).toByte()
+                4 -> {
+                    frame[1] = 0xFE.toByte()
+                    frame[2] = (len ushr 8).toByte()
+                    frame[3] = len.toByte()
+                }
+                else -> {
+                    frame[1] = 0xFF.toByte()
+                    for (i in 0 until 8) frame[2 + i] = (len.toLong() ushr ((7 - i) * 8)).toByte()
+                }
+            }
+            System.arraycopy(mask, 0, frame, headerBytes, mask.size)
+            val payloadStart = headerBytes + mask.size
+            for (i in 0 until len) frame[payloadStart + i] =
+                (b[off + i].toInt() xor mask[i and 3].toInt()).toByte()
+            raw.write(frame, 0, frameBytes)
+            raw.flush()
+            if (tracedDataFrames < SxbSshIoPolicy.MAX_DATA_FRAME_TRACES) {
+                tracedDataFrames++
+                traceFrame = true
             }
         }
-        buf.write(mask)
-        buf.write(masked)
-        synchronized(raw) { raw.write(buf.toByteArray()); raw.flush() }
+        if (traceFrame) onEvent("[SXB_TRACE] stage=WS_FRAME_OUT fin=true opcode=2 masked=true payload_bytes=$len")
     }
 
     override fun flush() = raw.flush()
@@ -424,6 +465,7 @@ private class WsInputStream(
 ) : InputStream() {
     private var pending = ByteArray(0)
     private var pendingPos = 0
+    private var tracedDataFrames = 0
 
     override fun read(): Int {
         val b = ByteArray(1)
@@ -468,7 +510,10 @@ private class WsInputStream(
                 if (opcode in 0x08..0x0A && (!fin || payloadLen > 125)) {
                     throw java.io.IOException("WS_PROTOCOL_ERROR control frame")
                 }
-                onEvent("[SXB_TRACE] stage=WS_FRAME_IN fin=$fin opcode=$opcode masked=$masked payload_bytes=$payloadLen")
+                val dataFrame = opcode == 0x00 || opcode == 0x01 || opcode == 0x02
+                val traceFrame = !dataFrame || tracedDataFrames < SxbSshIoPolicy.MAX_DATA_FRAME_TRACES
+                if (dataFrame && traceFrame) tracedDataFrames++
+                if (traceFrame) onEvent("[SXB_TRACE] stage=WS_FRAME_IN fin=$fin opcode=$opcode masked=$masked payload_bytes=$payloadLen")
                 val maskKey = if (masked) ByteArray(4) { readByte().toByte() } else null
                 val payload = ByteArray(payloadLen.toInt())
                 var total = 0
@@ -500,8 +545,10 @@ private class WsInputStream(
                     }
                     0x0A -> onEvent("[SXB_TRACE] stage=WS_PONG_RECEIVED payload_bytes=${payload.size}")
                     0x00, 0x01, 0x02 -> {
-                        onEvent("[SXB_DEBUG] WS_IN opcode=$opcode bytes=${payload.size}")
-                        SxbSecureLogger.debug("WS_FRAME_IN opcode=$opcode bytes=${payload.size}")
+                        if (traceFrame) {
+                            onEvent("[SXB_DEBUG] WS_IN opcode=$opcode bytes=${payload.size}")
+                            SxbSecureLogger.debug("WS_FRAME_IN opcode=$opcode bytes=${payload.size}")
+                        }
                         return payload
                     }
                     else -> throw java.io.IOException("WS_PROTOCOL_ERROR opcode")
@@ -567,6 +614,7 @@ private class SxbPayloadProxy(
         val connectTimeout = timeout.coerceIn(5_000, 30_000)
         val rawSocket = Socket()
         socket = rawSocket
+        SxbSshIoPolicy.prepareTransport(rawSocket)
         onEvent("[SXB_TRACE] stage=SOCKET_CREATED timeout_ms=$connectTimeout tls=$tlsEnabled sni_present=${sni.isNotBlank()}")
         // Socket() seul n'a pas forcément de descripteur natif. Créer le socket
         // local avant protect() est indispensable : sinon VpnService.protect()
@@ -612,7 +660,7 @@ private class SxbPayloadProxy(
         }
         socket = transportSocket
         val rawOut = transportSocket.getOutputStream()
-        val rawIn  = java.io.PushbackInputStream(transportSocket.getInputStream(), 1)
+        val rawIn  = java.io.PushbackInputStream(SxbSshIoPolicy.transportInput(transportSocket), 1)
 
         // ── 1. Substitutions dans le payload ─────────────────────────────────
         var payload = expandSshPayloadTokens(rawPayload, targetHost, targetPort, userAgent, sni)
@@ -825,6 +873,7 @@ private class SxbLoggingSocketFactory(
     override fun createSocket(host: String, port: Int): Socket {
         val rawSocket = Socket()
         try {
+            SxbSshIoPolicy.prepareTransport(rawSocket)
             return rawSocket.apply {
             // Garantit un FD exploitable par VpnService.protect() avant connect().
             // La liaison éphémère n'impose aucune adresse distante et évite qu'un
@@ -845,7 +894,7 @@ private class SxbLoggingSocketFactory(
     }
 
     override fun getInputStream(socket: Socket): InputStream =
-        SxbBannerInputStream(socket.getInputStream(), onBanner)
+        SxbBannerInputStream(SxbSshIoPolicy.transportInput(socket), onBanner)
 
     override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
 }
@@ -875,6 +924,7 @@ private class SxbTlsSocketFactory(
         val rawSocket = Socket()
         var ownedSocket: Socket = rawSocket
         try {
+        SxbSshIoPolicy.prepareTransport(rawSocket)
         // Même précaution qu'en SSH direct : protéger le socket AVANT connect(),
         // sinon il repasserait par le TUN qu'il est censé alimenter.
         val fdReady = runCatching {
@@ -925,7 +975,7 @@ private class SxbTlsSocketFactory(
     private fun isIpLiteral(value: String): Boolean =
         isIpLiteralHost(value)
 
-    override fun getInputStream(socket: Socket): InputStream = socket.getInputStream()
+    override fun getInputStream(socket: Socket): InputStream = SxbSshIoPolicy.transportInput(socket)
 
     override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
 }
@@ -2202,6 +2252,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         }
                     })
                     s.setConfig(commonProps)
+                    SxbSshIoPolicy.configureSession(s)
                     if (strategy != null) {
                         val strategyTlsServerName = sni.ifBlank {
                             when {
@@ -2459,7 +2510,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // openTun() au démarrage du moteur. On lui fournit simplement une
             // config dont l'outbound est notre SOCKS5 local alimenté par SSH.
             val label = if (usePayload) "SSH+PAYLOAD" else "SSH"
-            startLibboxService(buildSshSocksRelayConfig(host, relaisUdp = udpMode == "udpgw"), label)
+            startLibboxService(buildSshSocksRelayConfig(host, relaisUdp = udpMode == "udpgw", dnsChoice = connectionDnsChoice(cfg)), label)
 
             // ── Boucle de surveillance ────────────────────────────────────────
             // C'est le seul détecteur du transport SSH : il ne passe pas par le
@@ -3616,7 +3667,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 put("endpoints", JSONArray().put(SxbProtocolCompatibility.canonicalWireguard(cfg)))
                 put("outbounds", JSONArray())
                 put("route", JSONObject().put("final", "proxy"))
-                put("dns", profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject())
+                put("dns", profileDnsObject(connectionDnsChoice(cfg)) ?: defaultDnsObject())
             })
         }
         // optStringOrNull : jamais la chaîne "null" (AOSP) — correctif APK #165
@@ -3711,7 +3762,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // Le domaine du serveur doit être résolu HORS tunnel, sinon sing-box
         // boucle : joindre le proxy exige sa résolution, qui exige le proxy.
         val dnsObj = applyDnsLoopGuard(
-            profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject(),
+            profileDnsObject(connectionDnsChoice(cfg)) ?: defaultDnsObject(),
             listOf(host),
         )
 
@@ -3892,6 +3943,41 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * `local`. Retourne null si la valeur est vide ou inexploitable, auquel cas
      * l'appelant conserve le DNS par défaut de l'application.
      */
+    private fun connectionDnsChoice(cfg: JSONObject): String {
+        return cfg.optStringOrNull("connectionDns", "").trim().ifEmpty {
+            cfg.optStringOrNull("dns", "").trim()
+        }
+    }
+
+    private fun applyConnectionDnsOverride(source: JSONObject, choice: String, detourTag: String): JSONObject {
+        if (choice.isBlank()) return source
+        val preset = profileDnsObject(choice) ?: throw IllegalArgumentException("CONNECTION_DNS_INVALID")
+        val resolver = JSONObject(preset.getJSONArray("servers").getJSONObject(0).toString())
+        if (resolver.optString("detour") == "proxy") resolver.put("detour", detourTag)
+        val result = JSONObject(source.toString())
+        val servers = result.optJSONArray("servers") ?: JSONArray().also { result.put("servers", it) }
+        val finalTag = result.optString("final")
+        val target = (0 until servers.length()).firstOrNull {
+            servers.optJSONObject(it)?.optString("tag") == finalTag &&
+                servers.optJSONObject(it)?.optString("type") != "fakeip" &&
+                servers.optJSONObject(it)?.optString("address") != "fakeip"
+        }
+        if (target != null) {
+            resolver.put("tag", finalTag)
+            servers.put(target, resolver)
+        } else {
+            var tag = "sxb-connection-dns"
+            var suffix = 0
+            while ((0 until servers.length()).any { servers.optJSONObject(it)?.optString("tag") == tag }) {
+                tag = "sxb-connection-dns-${++suffix}"
+            }
+            resolver.put("tag", tag)
+            servers.put(resolver)
+            result.put("final", tag)
+        }
+        return result
+    }
+
     private fun profileDnsObject(raw: String): JSONObject? {
         val value = raw.trim()
         if (value.isEmpty()) return null
@@ -4713,6 +4799,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun buildRawSingBoxConfig(rawCfg: JSONObject): String {
+        val selectedConnectionDns = rawCfg.optStringOrNull("connectionDns", "")
         val cfg = normalizeRawSingBoxCompatibility(convertXrayToSingBoxIfNeeded(JSONObject(rawCfg.toString())))
         val knownTypes = setOf(
             "vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria2",
@@ -4844,7 +4931,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val hasConfiguredDnsServers = configuredDns?.optJSONArray("servers")?.let { it.length() > 0 } == true
         // Le garde s'applique aussi au DNS venu du profil : un JSON fournisseur
         // qui route son DNS par le proxy produit exactement la même récursion.
-        val sourceDns = if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag)
+        val sourceDns = applyConnectionDnsOverride(
+            if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag),
+            selectedConnectionDns, finalTag,
+        )
         // Le DNS doit suivre la MÊME bascule que les données : sans cela un seul
         // amont mort suffit à casser toute résolution, exactement le symptôme
         // « dns: exchange failed … 404 » observé sur le terrain.
@@ -5218,7 +5308,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * Comme pour buildSingBoxConfig(), le champ « file_descriptor » a disparu :
      * c'est openTun() qui fournit le TUN au moteur.
      */
-    private fun buildSshSocksRelayConfig(host: String = "", relaisUdp: Boolean = false): String {
+    private fun buildSshSocksRelayConfig(host: String = "", relaisUdp: Boolean = false, dnsChoice: String = ""): String {
         val routeRules = JSONArray()
         routeRules
             .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
@@ -5231,6 +5321,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
             routeRules.put(JSONObject().put("network", "udp").put("port", JSONArray().put(443)).put("outbound", "block"))
         }
 
+        val requestedResolver = profileDnsObject(dnsChoice)?.optJSONArray("servers")?.optJSONObject(0)
+        if (!relaisUdp && requestedResolver?.optString("address")?.startsWith("udp://") == true) {
+            throw IllegalArgumentException("SSH_DNS_UDP_UNSUPPORTED")
+        }
         return JSONObject().apply {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", applyDnsLoopGuard(JSONObject().apply {
@@ -5245,14 +5339,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     // SSH retarderait la résolution du PREMIER nom de plusieurs
                     // allers-retours — pour un chiffrement que le tunnel assure
                     // déjà. Voir RESOLVEUR_TUNNEL.
-                    .put(JSONObject().put("tag", "dns-r").put("address", RESOLVEUR_TUNNEL).put("strategy", tunnelDnsStrategy())
+                    .put(JSONObject().put("tag", "dns-r")
+                        .put("address", requestedResolver?.optString("address") ?: RESOLVEUR_TUNNEL)
+                        .put("strategy", requestedResolver?.optString("strategy") ?: tunnelDnsStrategy())
                         // DÉTOUR EXPLICITE, indispensable depuis sing-box 1.12 :
                         // sans lui, un serveur DNS sort EN DIRECT (en 1.11 il
                         // prenait l'outbound par défaut, c'est-à-dire ce SOCKS).
                         // Sur un forfait qui ne décompte que le tunnel, le DNS
                         // des autres applications échouait : VPN « connecté »,
                         // compteurs qui bougent, et aucune donnée hors de l'app.
-                        .put("detour", "proxy"))
+                        .put("detour", requestedResolver?.optString("detour") ?: "proxy"))
                     .put(JSONObject().put("tag", "dns-l").put("address", bootstrapDnsAddress())
                         .put("strategy", dnsStrategy()).put("detour", "direct"))
                 )
@@ -5438,7 +5534,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val threadB = Thread({
                 var receivedEof = false
                 try {
-                    val buf = ByteArray(8192); var n: Int
+                    val buf = ByteArray(SxbSshIoPolicy.RELAY_BUFFER_BYTES); var n: Int
                     while (!client.isClosed) {
                         n = chIn.read(buf)
                         if (n == -1) { receivedEof = true; break }
@@ -5458,7 +5554,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             downstream = threadB
 
             try {
-                val buf = ByteArray(8192); var n: Int
+                val buf = ByteArray(SxbSshIoPolicy.RELAY_BUFFER_BYTES); var n: Int
                 while (channel.isConnected && !client.isClosed) {
                     n = client.inputStream.read(buf); if (n == -1) break
                     chOut.write(buf, 0, n); chOut.flush()

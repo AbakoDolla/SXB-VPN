@@ -333,13 +333,14 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
         });
       }
       const engine = engineConfigFromCanonical(canonical);
-      // ALLOWLIST métadonnées (§6.1) : les SEULS champs que le serveur ajoute
-      // à la configuration fournisseur. Aucun champ technique n'est modifié.
+      // L'integrite du fournisseur reste intacte ; le DNS de connexion est
+      // une surcouche explicite du dashboard, distincte de son DNS SlowDNS.
       rawConfig = {
         ...engine,
         displayProtocol: profile.displayProtocol || (engine as any).protocol || proto,
         profileId:       profile.id,
         profileName:     profile.name,
+        ...(profile.dns?.trim() && { connectionDns: profile.dns.trim() }),
       };
     } else {
       // ── Chemin LEGACY (reconstruction colonnes — comportement historique) ──

@@ -1,4 +1,5 @@
 {
+  "profile_dns_invalid": "Invalid DNS. Use an IP, resolver hostname or valid tcp://, tls:// or https:// address.",
   "shared_allocation_account": "This account contains allocations owned by others. Modify only your own plans or contact an administrator.",
   "free_trial": {
     "update_failed": "Plan could not be updated — see the server log.",

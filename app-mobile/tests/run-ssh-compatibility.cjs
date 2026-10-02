@@ -93,6 +93,8 @@ ${service.slice(keyStart, keyEnd)}
     return jsch
 }
 private fun connectCandidate(candidate: Session, timeoutMs: Int) {
+    SxbSshIoPolicy.configureSession(candidate)
+    check(candidate.getConfig("max_input_buffer_size") == SxbSshIoPolicy.MAX_CHANNEL_INPUT_BUFFER_BYTES.toString())
 ${candidateConnect[0]}
 }
 ` + tests);

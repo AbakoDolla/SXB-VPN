@@ -953,7 +953,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
             displayProtocol: adminForm.displayProtocol,
             status: adminForm.status,
             offlineValidDays: Number(adminForm.offlineValidDays),
-            dns: adminForm.dns || undefined,
+            dns: adminForm.dns.trim(),
           }, tokenFor(editId));
         } else if (isImported) {
           // Profil importé : UNIQUEMENT les champs administratifs (jamais de technique)
@@ -962,7 +962,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
             displayProtocol: adminForm.displayProtocol,
             status: adminForm.status,
             offlineValidDays: Number(adminForm.offlineValidDays),
-            dns: adminForm.dns || undefined,
+            dns: adminForm.dns.trim(),
           }, tokenFor(editId));
         } else {
           // Profil legacy : champs techniques immuables côté backend (PUT rejette tout champ technique avec 409)
@@ -973,7 +973,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
             displayProtocol: adminForm.displayProtocol,
             status: adminForm.status,
             offlineValidDays: Number(adminForm.offlineValidDays),
-            dns: adminForm.dns || undefined,
+            dns: adminForm.dns.trim(),
           }, tokenFor(editId));
         }
       } else if (createTab === 'import') {
@@ -991,6 +991,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
             status: adminForm.status,
             offlineValidDays: Number(adminForm.offlineValidDays),
             validityDays: validDays(adminForm.validityDays) ?? undefined,
+            dns: adminForm.dns.trim() || undefined,
           });
           savedProfile = batch.profiles[0] || null;
           if (epoch !== generation.current) return;
@@ -1422,6 +1423,31 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                   <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.offlineDays')} </label>
                   <input type="number" value={adminForm.offlineValidDays} onChange={e => fa('offlineValidDays', Number(e.target.value))}
                     min={1} max={365} className={inputCls} />
+                </div>
+                <div className="col-span-2 space-y-2">
+                  <label htmlFor="profile-connection-dns-preset" className="block text-sm text-gray-300">
+                    {t('configurations.ui.connectionDns')}
+                  </label>
+                  <select id="profile-connection-dns-preset" style={{ fontSize: 16 }} className={inputCls}
+                    value={['', '8.8.8.8', '1.1.1.1', 'local'].includes(adminForm.dns) ? adminForm.dns : '__custom__'}
+                    onChange={event => fa('dns', event.target.value)}>
+                    <option value="">{t('configurations.ui.connectionDnsAuto')}</option>
+                    <option value="8.8.8.8">{t('configurations.ui.connectionDnsGoogle')}</option>
+                    <option value="1.1.1.1">{t('configurations.ui.connectionDnsCloudflare')}</option>
+                    <option value="local">{t('configurations.ui.connectionDnsSystem')}</option>
+                    <option value="__custom__" disabled>{t('configurations.ui.connectionDnsCustom')}</option>
+                  </select>
+                  <label htmlFor="profile-connection-dns-address" className="block text-sm text-gray-300">
+                    {t('configurations.ui.connectionDnsAddress')}
+                  </label>
+                  <input id="profile-connection-dns-address" value={adminForm.dns}
+                    onChange={event => fa('dns', event.target.value)} maxLength={512}
+                    spellCheck={false} autoComplete="off" style={{ fontSize: 16 }}
+                    placeholder={t('configurations.ui.dnsPlaceholder')} className={inputCls}
+                    aria-describedby="profile-connection-dns-hint" />
+                  <p id="profile-connection-dns-hint" className="text-sm leading-relaxed text-gray-400">
+                    {t('configurations.ui.connectionDnsHint')}
+                  </p>
                 </div>
                 {!editId && (
                   <div className="col-span-2">

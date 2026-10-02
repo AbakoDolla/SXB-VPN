@@ -765,7 +765,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /put\("alter_id", alterId\)/);
 
     // Le DNS du profil prime sur celui de l'application.
-    assert.match(nativeService, /profileDnsObject\(cfg\.optStringOrNull\("dns", ""\)\)/);
+    assert.match(nativeService, /profileDnsObject\(connectionDnsChoice\(cfg\)\)/);
   });
 
   it('ne confond jamais server, SNI et en-tête Host', () => {
@@ -1839,7 +1839,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /SxbTunnelPolicy\.prependDnsGuardRules\(dns, domains, directTag, blockTag\)/);
 
     // Les deux chemins moteur sont couverts : profil plat ET sing-box importé.
-    assert.ok(nativeService.includes('profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject(),'));
+    assert.ok(nativeService.includes('profileDnsObject(connectionDnsChoice(cfg)) ?: defaultDnsObject(),'));
     assert.ok(nativeService.includes('applyDnsLoopGuard(reliableDns, outboundServerHosts)'));
     // Sur une chaîne de proxys, chaque maillon nommé doit être résolu hors tunnel.
     assert.ok(nativeService.includes('val outboundServerHosts = LinkedHashSet<String>()'));
@@ -1927,7 +1927,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /private fun tunnelDnsStrategy\(\): String =\s*\n\s*if \(tunInbound\(\)\.has\("inet6_address"\)\) dnsStrategy\(\) else "ipv4_only"/);
     // Le résolveur joint à travers le tunnel suit le tunnel…
     assert.match(nativeService, /put\("tag", "dns-remote"\).*"proxy"|put\("strategy", tunnelDnsStrategy\(\)\)/s);
-    assert.match(nativeService, /put\("tag", "dns-r"\).*put\("strategy", tunnelDnsStrategy\(\)\)/);
+    assert.match(nativeService, /put\("tag", "dns-r"\)[\s\S]{0,250}put\("strategy", requestedResolver\?\.optString\("strategy"\) \?: tunnelDnsStrategy\(\)\)/);
     // …et un `final` qui sort en direct n'a aucun tunnel à suivre : il reprend
     // la stratégie du réseau. La condition porte désormais un nom, parce
     // qu'elle décide aussi du RÉSOLVEUR et plus seulement de la stratégie.

@@ -163,6 +163,7 @@ export const importVpnProfiles = (data: {
   offlineValidDays?: number;
   validityDays?: number;
   status?: string;
+  dns?: string;
 }): Promise<{ profiles: VpnProfile[]; imported: number; warnings: string[] }> =>
   apiRequest<any>('/vpn-profiles/import-batch', { method: 'POST', body: data })
     .then(r => ({

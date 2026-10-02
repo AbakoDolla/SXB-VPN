@@ -440,10 +440,13 @@ Un revendeur ne peut pas suspendre, supprimer ou faire tourner le code global
 d'un compte partage et ainsi retirer les allocations d'autrui : il gere ses
 propres forfaits, les actions globales restant a l'administration.
 
-Le mobile presente la somme des allocations applicables, avec ventes et
-essais separes. Le moteur et le ledger debitent toujours le `subscriptionId`
-effectivement selectionne : le total informatif n'est pas un quota global
-autorise a consommer le forfait d'un autre vendeur. Expiration, etat,
+L'affichage financier reste dans le dashboard : chaque groupe de client
+presente le total attribue, consomme et restant des seules allocations
+visibles du filtre et du compartiment courant. Les essais gardent leur
+section dediee et aucun total concurrent n'est expose a un revendeur.
+Le mobile conserve son affichage habituel par forfait, sans bloc agrege
+ni etiquette de vendeur. Le moteur et le ledger debitent toujours le
+`subscriptionId` effectivement selectionne. Expiration, etat,
 configuration et liaison appareil restent applicables. Un vendeur expire
 bloque ses allocations, pas les allocations independantes des autres vendeurs
 ou du systeme ; les revocations du compte/appareil lui-meme restent globales.
@@ -461,6 +464,55 @@ avec un mouvement de correction immuable ; les plafonds attribues ne changent
 pas. La reexecution ne cree aucun ajustement lorsque le compteur est deja juste.
 Le gate readonly exige aussi le trigger et la contrainte d'identite
 d'allocation. Un echec de migration ou de reconciliation bloque la publication.
+
+### Chemin de donnees SSH : couts internes et debit
+
+Les sockets SSH proteges (direct, TLS declare et payload) activent
+`TCP_NODELAY`. Le flux entrant est tamponne a 32 KiB pour ne pas effectuer
+une lecture reseau par octet d'en-tete HTTP/WebSocket ou de banniere.
+Les relais SOCKS utilisent 32 KiB au lieu de 8 KiB. Le tampon de canal
+JSch commence toujours a 32 KiB et peut grandir a la demande jusqu'a
+256 KiB, sans reservation arbitraire par connexion et sans modifier
+les fenetres SSH ou le chiffrement negocies.
+
+L'emetteur WebSocket conserve un tampon borne pour les paquets usuels,
+masque chaque trame avec un nouveau masque cryptographique et serialise
+la trame complete sur le meme verrou que les controles ping/pong. Les
+trames de donnees ne provoquent que deux diagnostics par direction :
+les journaux de controle, les refus et les erreurs restent explicites.
+Les grands appels conservent les longueurs RFC 6455 et leurs octets exacts.
+Les fermetures de socket, demi-fermetures TCP et compteurs ne changent pas.
+
+`run-ssh-frame-throughput.cjs` mesure les declarations Kotlin reellement
+extraites, et les tests SSH/JSch/SOCKS exercent le vrai chemin. Le resultat
+de ce banc JVM est un cout de tramage et d'allocation, pas une promesse
+de debit operateur. Le banc VLESS/WS/TLS/HTTP utilise aussi le vrai moteur
+sur boucle locale et verifie des transferts de plusieurs Mio. Aucun
+parametre explicite de profil, TLS, DNS, MTU, route, UDP ou multiplexage
+n'est modifie pour afficher une vitesse flatteuse. La capacite du serveur,
+les politiques operateur et les conditions du telephone restent exterieures
+a cette validation.
+
+Le dashboard propose un DNS principal par configuration : profil/automatique,
+Google `8.8.8.8`, Cloudflare `1.1.1.1`, reseau de l'appareil, ou adresse
+personnalisee. Le moteur utilisait deja `tcp://8.8.8.8` par defaut ; le
+selecteur n'est donc pas presente comme un moyen de supprimer un plafond de
+debit. Il rend le choix explicite et corrige son application effective.
+
+Le DNS administratif ne reecrit pas le canonique importe : une surcouche
+`connectionDns` voyage dans le blob GCM authentifie. Le DNS transport d'un
+profil SlowDNS reste disponible sous son champ fournisseur d'origine.
+Le changement modifie l'identite de cache et la version de configuration,
+donc le telephone peut reprovisionner sans reimporter les identifiants.
+Le reset vide restaure le DNS du profil. Les imports multiples appliquent
+le meme choix et les adresses invalides sont refusees sans ecriture.
+
+SSH emploie TCP pour les IP simples ; un DNS UDP explicite sans passerelle
+UDPGW produit une erreur, pas un acces annonce comme fonctionnel. Sur un
+JSON sing-box/Xray, seul le resolveur principal est remplace : les autres
+serveurs et regles DNS specifiques sont conserves et la nouvelle resolution
+emprunte le detour effectif. Les controles de verrouillage de profil restent
+exiges pour modifier ce choix.
 
 ## E. API
 
